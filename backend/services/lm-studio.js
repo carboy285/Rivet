@@ -110,6 +110,19 @@ export async function getModels(baseUrl, signal) {
   return (payload.data || []).map((item) => ({ id: item.id, ownedBy: item.owned_by || 'local' })).filter((item) => item.id)
 }
 
+/** LM Studio's native REST API lists every downloaded model along with its
+ *  current load state — the OpenAI-compatible /v1/models endpoint only reports
+ *  loaded ones, so we hit /api/v0/models on the same origin instead. */
+export async function getAllModelsWithState(baseUrl, signal) {
+  const origin = new URL(baseUrl).origin
+  const response = await fetch(`${origin}/api/v0/models`, { signal })
+  if (!response.ok) throw new Error(`LM Studio native API failed (${response.status}).`)
+  const payload = await response.json()
+  return (payload.data || [])
+    .map((item) => ({ id: item.id, state: item.state, type: item.type }))
+    .filter((item) => item.id)
+}
+
 const SUMMARY_INSTRUCTION = 'Summarize the conversation above concisely and factually, in plain notes (not a transcript). Preserve important facts, decisions, file paths, and outstanding tasks so work can continue from the summary alone.'
 
 export async function summarizeConversation({ baseUrl, model, conversation, maxTokens, signal }) {

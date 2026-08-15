@@ -33,10 +33,13 @@ export function displayWidth(value) {
   return String(value).replace(/\u001b\[[0-9;]*m/g, '').length
 }
 
-/** Wipe the visible screen and the scrollback buffer, then home the cursor. */
+/** Wipe the visible screen and the scrollback buffer, then home the cursor.
+ *  ESC c (full terminal reset) runs first so terminals that ignore the xterm
+ *  [3J scrollback wipe still lose their history — otherwise shell output from
+ *  before the CLI launched would remain reachable by scrolling up. */
 export function clearScreen() {
   if (!stdout.isTTY) return
-  stdout.write('\u001b[2J\u001b[3J\u001b[H')
+  stdout.write('\u001bc\u001b[2J\u001b[3J\u001b[H')
 }
 
 /** A heading followed by a hairline rule, used by /status, /config, /doctor, /usage. */
@@ -125,29 +128,74 @@ export function toolResultLine(name, result, isError, elapsedMs) {
   return `${INDENT}${ui.muted(glyph.corner)} ${mark} ${isError ? ui.red(detail) : ui.muted(detail)}${timing}\n`
 }
 
-export function banner({ project, url, model, connected, version, approveAll }) {
-  const width = terminalWidth()
-  const inner = width - INDENT.length * 2 - 2
+export function banner({ project, url, model, connected, version, approveAll, allModels = [] }) {
+  const leftWidth = 56
+  const inner = leftWidth - INDENT.length * 2 - 2
   const title = ` ${glyph.diamond} LOCAL CODING AGENT`
   const versionTag = `v${version} `
   const padding = Math.max(1, inner - title.length - versionTag.length)
-  const top = `${INDENT}${ui.muted(glyph.tl + glyph.h.repeat(inner) + glyph.tr)}\n`
-  const middle = `${INDENT}${ui.muted(glyph.v)}${ui.accent(ui.bold(title))}${' '.repeat(padding)}${ui.muted(versionTag)}${ui.muted(glyph.v)}\n`
-  const bottom = `${INDENT}${ui.muted(glyph.bl + glyph.h.repeat(inner) + glyph.br)}\n`
 
   const modelValue = connected
     ? `${model}  ${ui.green(`${glyph.dot} connected`)}`
     : `${model}  ${ui.yellow(`${glyph.ring} LM Studio offline`)}`
 
-  const body = rows([
+  const rowEntries = [
     ['project', project],
     ['model', modelValue],
     ['server', url],
     ['approvals', approveAll ? ui.yellow('auto-approved for this session') : 'ask before changes'],
-  ])
+  ]
+  const labelWidth = rowEntries.reduce((max, [label]) => Math.max(max, label.length), 0)
 
-  const hint = `${INDENT}${ui.accent('/help')} ${ui.muted('for commands')} ${ui.muted(glyph.bullet)} ${ui.accent('/clear')} ${ui.muted('to reset the screen')} ${ui.muted(glyph.bullet)} ${ui.accent('ctrl+c')} ${ui.muted('to interrupt')}\n`
-  return `\n${top}${middle}${bottom}\n${body}\n${hint}\n`
+  const leftLines = [
+    `${INDENT}${ui.muted(glyph.tl + glyph.h.repeat(inner) + glyph.tr)}`,
+    `${INDENT}${ui.muted(glyph.v)}${ui.accent(ui.bold(title))}${' '.repeat(padding)}${ui.muted(versionTag)}${ui.muted(glyph.v)}`,
+    `${INDENT}${ui.muted(glyph.bl + glyph.h.repeat(inner) + glyph.br)}`,
+    '',
+    ...rowEntries.map(([label, value]) => `${INDENT}${ui.muted(label.padEnd(labelWidth))}  ${value}`),
+  ]
+
+  // Right column: full model catalog with load state. Only shown when the
+  // terminal is wide enough — otherwise it drops back to the bottom so nothing
+  // wraps into the left column.
+  const rightLines = []
+  if (allModels.length) {
+    const loadedCount = allModels.filter((m) => m.state === 'loaded').length
+    rightLines.push(`${ui.bold('MODELS')}  ${ui.muted(`${loadedCount}/${allModels.length} loaded`)}`)
+    rightLines.push(ui.muted(glyph.h.repeat(30)))
+    for (const item of allModels) {
+      const loaded = item.state === 'loaded'
+      const mark = loaded ? ui.green(glyph.dot) : ui.muted(glyph.ring)
+      const label = loaded ? item.id : ui.muted(item.id)
+      rightLines.push(`${mark} ${label}`)
+    }
+  } else if (connected) {
+    rightLines.push(ui.muted('no models installed'))
+  }
+
+  const available = stdout.columns || 80
+  const canFitRight = rightLines.length > 0 && available >= leftWidth + 24
+  const gap = 3
+  const totalLines = canFitRight ? Math.max(leftLines.length, rightLines.length) : leftLines.length
+  const parts = ['\n']
+  for (let i = 0; i < totalLines; i += 1) {
+    const left = leftLines[i] || ''
+    const right = canFitRight ? (rightLines[i] || '') : ''
+    if (right) {
+      const pad = Math.max(gap, leftWidth + gap - displayWidth(left))
+      parts.push(`${left}${' '.repeat(pad)}${right}\n`)
+    } else {
+      parts.push(`${left}\n`)
+    }
+  }
+  parts.push('\n')
+  if (!canFitRight && rightLines.length) {
+    parts.push(`${INDENT}${ui.bold('MODELS')}\n`)
+    for (const line of rightLines.slice(2)) parts.push(`${INDENT}${line}\n`)
+    parts.push('\n')
+  }
+  parts.push(`${INDENT}${ui.accent('/help')} ${ui.muted('for commands')} ${ui.muted(glyph.bullet)} ${ui.accent('/clear')} ${ui.muted('to reset the screen')} ${ui.muted(glyph.bullet)} ${ui.accent('ctrl+c')} ${ui.muted('to interrupt')}\n\n`)
+  return parts.join('')
 }
 
 export function promptLabel() {

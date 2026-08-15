@@ -35,7 +35,7 @@ import {
 } from './ui.js'
 import { createWorkspaceManager } from '../backend/services/workspace-manager.js'
 import { createSettingsStore, normalizeSettings } from '../backend/services/settings-store.js'
-import { getModels, runCodingAgent, summarizeConversation } from '../backend/services/lm-studio.js'
+import { getAllModelsWithState, getModels, runCodingAgent, summarizeConversation } from '../backend/services/lm-studio.js'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const execFileAsync = promisify(execFile)
@@ -163,10 +163,16 @@ async function main() {
   resetApprovals()
 
   let models = []
+  let allModels = []
   let connected = false
 
   function activeModel() {
     return settings.model === 'auto' && models.length ? models[0].id : settings.model
+  }
+
+  async function refreshModelCatalog(timeoutMs = 2500) {
+    try { allModels = await getAllModelsWithState(options.url, AbortSignal.timeout(timeoutMs)) }
+    catch { allModels = [] /* native REST API may be unreachable; banner just omits the column */ }
   }
 
   function renderBanner() {
@@ -177,6 +183,7 @@ async function main() {
       connected,
       version: VERSION,
       approveAll: approvals.approveAll,
+      allModels,
     }))
   }
 
@@ -184,6 +191,8 @@ async function main() {
     models = await getModels(options.url, AbortSignal.timeout(2500))
     connected = true
   } catch { /* The interactive shell can still start while LM Studio is offline. */ }
+  await refreshModelCatalog()
+  clearScreen()
   renderBanner()
 
   async function runTurn(prompt) {
@@ -305,32 +314,14 @@ async function main() {
         try {
           models = await getModels(nextUrl, AbortSignal.timeout(5000))
           connected = true
+          await refreshModelCatalog(5000)
           stdout.write(statusLine('ok', `Server set to ${nextUrl}`, `${glyph.bullet} ${models.length} model(s) loaded`))
         } catch (error) {
           connected = false
+          allModels = []
           stdout.write(statusLine('ok', `Server set to ${nextUrl}`))
           stdout.write(statusLine('warn', friendlyError(error, nextUrl)))
         }
-      },
-    },
-    {
-      name: '/models',
-      usage: '/models',
-      summary: 'List models loaded in LM Studio',
-      async handler() {
-        try {
-          models = await getModels(options.url, AbortSignal.timeout(5000))
-          stdout.write(heading('models'))
-          if (!models.length) stdout.write(statusLine('warn', 'No models are loaded in LM Studio.'))
-          else {
-            const current = activeModel()
-            for (const model of models) {
-              const selected = model.id === current
-              stdout.write(`${INDENT}${selected ? ui.accent(glyph.dot) : ui.muted(glyph.ring)} ${selected ? ui.bold(model.id) : model.id}\n`)
-            }
-          }
-          stdout.write('\n')
-        } catch (error) { stdout.write(errorLine(friendlyError(error, options.url))) }
       },
     },
     {
@@ -346,6 +337,7 @@ async function main() {
         try {
           models = await getModels(options.url, AbortSignal.timeout(5000))
           connected = true
+          await refreshModelCatalog(5000)
         } catch (error) {
           stdout.write(errorLine(friendlyError(error, options.url)))
           return
@@ -529,8 +521,13 @@ async function main() {
       aliases: ['/new'],
       usage: '/clear',
       summary: 'Clear the screen and start a fresh conversation',
-      handler() {
+      async handler() {
         conversation = []
+        try {
+          models = await getModels(options.url, AbortSignal.timeout(2500))
+          connected = true
+        } catch { connected = false }
+        await refreshModelCatalog()
         clearScreen()
         renderBanner()
         stdout.write(statusLine('ok', 'Screen and conversation cleared.'))
