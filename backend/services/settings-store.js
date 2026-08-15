@@ -28,6 +28,21 @@ export function normalizeSettings(value = {}) {
   }
 }
 
+export const DEFAULT_PREFERENCES = {
+  ...DEFAULT_SETTINGS,
+  verboseTools: false,
+  serverUrl: '',
+}
+
+/** Settings plus the CLI-only preferences (verbose tool output, server URL) that ride along in the same file. */
+export function normalizePreferences(value = {}) {
+  return {
+    ...normalizeSettings(value),
+    verboseTools: Boolean(value.verboseTools),
+    serverUrl: typeof value.serverUrl === 'string' && value.serverUrl.trim() ? value.serverUrl.trim().slice(0, 2000) : '',
+  }
+}
+
 export function createSettingsStore(projectRoot) {
   const directory = path.join(projectRoot, '.local-coding-agent')
   const settingsPath = path.join(directory, 'settings.json')
@@ -35,20 +50,20 @@ export function createSettingsStore(projectRoot) {
   async function get() {
     try {
       const saved = JSON.parse(await fs.readFile(settingsPath, 'utf8'))
-      return normalizeSettings({ ...DEFAULT_SETTINGS, ...saved })
+      return normalizePreferences({ ...DEFAULT_PREFERENCES, ...saved })
     } catch (error) {
       if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
-      return { ...DEFAULT_SETTINGS }
+      return { ...DEFAULT_PREFERENCES }
     }
   }
 
   async function set(value) {
-    const settings = normalizeSettings(value)
+    const preferences = normalizePreferences(value)
     await fs.mkdir(directory, { recursive: true })
     const temporary = `${settingsPath}.${process.pid}.tmp`
-    await fs.writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await fs.writeFile(temporary, `${JSON.stringify(preferences, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
     await fs.rename(temporary, settingsPath)
-    return settings
+    return preferences
   }
 
   return { get, set }

@@ -33,7 +33,7 @@ import {
   usageLine,
 } from './ui.js'
 import { createWorkspaceManager } from '../backend/services/workspace-manager.js'
-import { DEFAULT_SYSTEM_PROMPT, normalizeSettings } from '../backend/services/settings-store.js'
+import { createSettingsStore, normalizeSettings } from '../backend/services/settings-store.js'
 import { getModels, runCodingAgent, summarizeConversation } from '../backend/services/lm-studio.js'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -108,14 +108,31 @@ async function main() {
     : process.cwd()
   const workspace = await createWorkspaceManager(initialProject)
   const terminal = readline.createInterface({ input: stdin, output: stdout, terminal: Boolean(stdin.isTTY) })
+
+  // Each project remembers its own model/temperature/prompt/etc. so the next
+  // session in that folder starts back up the way it was left. Explicit CLI
+  // flags always win over whatever was saved last time.
+  let settingsStore = createSettingsStore(workspace.info().path)
+  const savedPreferences = await settingsStore.get()
+  if (!options.explicit.has('model')) options.model = savedPreferences.model
+  if (!options.explicit.has('temperature')) options.temperature = savedPreferences.temperature
+  if (!options.explicit.has('maxTokens')) options.maxTokens = savedPreferences.maxTokens
+  if (!options.explicit.has('verboseTools')) options.verboseTools = savedPreferences.verboseTools
+  if (!options.explicit.has('url') && savedPreferences.serverUrl) options.url = savedPreferences.serverUrl
+
   let settings = normalizeSettings({
-    systemPrompt: process.env.CODING_AGENT_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
+    systemPrompt: process.env.CODING_AGENT_SYSTEM_PROMPT || savedPreferences.systemPrompt,
     model: options.model,
     temperature: options.temperature,
     maxTokens: options.maxTokens,
   })
   let conversation = []
   let activeController = null
+
+  async function persistPreferences() {
+    try { await settingsStore.set({ ...settings, verboseTools: options.verboseTools, serverUrl: options.url }) }
+    catch { /* best-effort — a read-only project folder should not block exit */ }
+  }
 
   async function confirmTool(name, input) {
     if (!stdin.isTTY) return false
@@ -235,9 +252,19 @@ async function main() {
         if (!argument) { stdout.write(usageLine('/project /absolute/path/to/project')); return }
         try {
           const nextProject = argument.startsWith('~') ? argument : path.resolve(argument)
+          await persistPreferences()
           await workspace.select(nextProject)
           conversation = []
           resetApprovals()
+          settingsStore = createSettingsStore(workspace.info().path)
+          const nextPreferences = await settingsStore.get()
+          settings = normalizeSettings({
+            systemPrompt: process.env.CODING_AGENT_SYSTEM_PROMPT || nextPreferences.systemPrompt,
+            model: nextPreferences.model,
+            temperature: nextPreferences.temperature,
+            maxTokens: nextPreferences.maxTokens,
+          })
+          options.verboseTools = nextPreferences.verboseTools
           stdout.write(statusLine('ok', `Opened ${workspace.info().path}`, `${glyph.bullet} conversation and approvals reset`))
         } catch (error) { stdout.write(errorLine(error.message)) }
       },
@@ -525,6 +552,7 @@ async function main() {
       } else await runTurn(input)
     }
   } finally {
+    await persistPreferences()
     process.off('SIGINT', onInterrupt)
     if (stdin.isTTY) stdin.off('keypress', onKeypress)
     terminal.close()

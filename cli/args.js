@@ -51,6 +51,8 @@ export function parseArgs(argv) {
     project: '', prompt: '', model: 'auto', temperature: 0.2, maxTokens: 4096,
     url: process.env.LM_STUDIO_URL || 'http://localhost:1234/v1',
     yes: false, verboseTools: false, help: false, version: false,
+    // Flags the user actually typed, so saved preferences know which fields they may fill in.
+    explicit: new Set(),
   }
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -59,17 +61,17 @@ export function parseArgs(argv) {
     if (argument === '-h' || argument === '--help') options.help = true
     else if (argument === '-v' || argument === '--version') options.version = true
     else if (argument === '-y' || argument === '--yes') options.yes = true
-    else if (argument === '--verbose-tools') options.verboseTools = true
+    else if (argument === '--verbose-tools') { options.verboseTools = true; options.explicit.add('verboseTools') }
     else if (argument === '-p' || argument === '--prompt') { options.prompt = nextValue(argv, index, argument); index += 1 }
     else if (argument.startsWith('--prompt=')) options.prompt = argument.slice(9)
-    else if (argument === '-m' || argument === '--model') { options.model = nextValue(argv, index, argument); index += 1 }
-    else if (argument.startsWith('--model=')) options.model = argument.slice(8)
-    else if (argument === '-t' || argument === '--temperature') { options.temperature = Number(nextValue(argv, index, argument)); index += 1 }
-    else if (argument.startsWith('--temperature=')) options.temperature = Number(argument.slice(14))
-    else if (argument === '--max-tokens') { options.maxTokens = Number(nextValue(argv, index, argument)); index += 1 }
-    else if (argument.startsWith('--max-tokens=')) options.maxTokens = Number(argument.slice(13))
-    else if (argument === '--url') { options.url = nextValue(argv, index, argument); index += 1 }
-    else if (argument.startsWith('--url=')) options.url = argument.slice(6)
+    else if (argument === '-m' || argument === '--model') { options.model = nextValue(argv, index, argument); options.explicit.add('model'); index += 1 }
+    else if (argument.startsWith('--model=')) { options.model = argument.slice(8); options.explicit.add('model') }
+    else if (argument === '-t' || argument === '--temperature') { options.temperature = Number(nextValue(argv, index, argument)); options.explicit.add('temperature'); index += 1 }
+    else if (argument.startsWith('--temperature=')) { options.temperature = Number(argument.slice(14)); options.explicit.add('temperature') }
+    else if (argument === '--max-tokens') { options.maxTokens = Number(nextValue(argv, index, argument)); options.explicit.add('maxTokens'); index += 1 }
+    else if (argument.startsWith('--max-tokens=')) { options.maxTokens = Number(argument.slice(13)); options.explicit.add('maxTokens') }
+    else if (argument === '--url') { options.url = nextValue(argv, index, argument); options.explicit.add('url'); index += 1 }
+    else if (argument.startsWith('--url=')) { options.url = argument.slice(6); options.explicit.add('url') }
     else if (argument.startsWith('-')) throw new Error(`Unknown option: ${argument}`)
     else if (!options.project) options.project = argument
     else throw new Error(`Unexpected argument: ${argument}`)
