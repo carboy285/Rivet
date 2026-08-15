@@ -3,13 +3,13 @@
 import fs from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
 import path from 'node:path'
-import readline from 'node:readline/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { stdin, stdout } from 'node:process'
 import { parseArgs, normalizeBaseUrl, HELP, VERSION } from './args.js'
 import { createApprovedRuntime } from './approval.js'
+import { createPromptSession } from './prompt.js'
 import {
   agentLabel,
   approvalCard,
@@ -108,7 +108,6 @@ async function main() {
     ? options.project.startsWith('~') ? options.project : path.resolve(options.project)
     : process.cwd()
   const workspace = await createWorkspaceManager(initialProject)
-  const terminal = readline.createInterface({ input: stdin, output: stdout, terminal: Boolean(stdin.isTTY) })
 
   // Each project remembers its own model/temperature/prompt/etc. so the next
   // session in that folder starts back up the way it was left. Explicit CLI
@@ -135,11 +134,22 @@ async function main() {
     catch { /* best-effort — a read-only project folder should not block exit */ }
   }
 
+  // Filled in below once the commands list is built — the prompt session
+  // reads it lazily via getCommands so we can build the reader before the
+  // commands (which depend on many closures) exist.
+  let commands = []
+  const prompt = createPromptSession({
+    getCommands: () => commands,
+    onClearScreen: () => renderBanner(),
+  })
+
   async function confirmTool(name, input) {
     if (!stdin.isTTY) return false
     stdout.write(approvalCard(name, input))
-    const answer = (await terminal.question(approvalQuestion())).trim().toLowerCase()
+    const raw = await prompt.question(approvalQuestion())
     stdout.write('\n')
+    if (raw === null) return false
+    const answer = raw.trim().toLowerCase()
     if (answer === 'a' || answer === 'all' || answer === 'always') return 'all'
     if (answer === 'y' || answer === 'yes') return 'once'
     return false
@@ -233,7 +243,7 @@ async function main() {
     } finally { activeController = null }
   }
 
-  const commands = [
+  commands = [
     {
       name: '/help',
       usage: '/help',
@@ -352,7 +362,7 @@ async function main() {
           { id: 'auto', label: 'auto — first loaded model' },
           ...models.map((model) => ({ id: model.id, label: model.id })),
         ]
-        const picked = await selectFromList({ terminal, title: 'select model', items, currentId: settings.model })
+        const picked = await selectFromList({ title: 'select model', items, currentId: settings.model })
         if (!picked) { stdout.write(statusLine('info', 'Selection cancelled.')); return }
         settings = { ...settings, model: picked.id }
         stdout.write(statusLine('ok', `Model set to ${ui.bold(picked.id)}`))
@@ -549,20 +559,13 @@ async function main() {
     return entry.handler(argument)
   }
 
+  // SIGINT only fires when stdin is not in raw mode (i.e. while the model is
+  // running). During the interactive prompt the reader is in raw mode and
+  // handles Ctrl+C itself — clearing the buffer, or exiting if it was empty.
   const onInterrupt = () => {
     if (activeController) activeController.abort()
-    else { stdout.write('\n'); terminal.close() }
   }
   process.on('SIGINT', onInterrupt)
-
-  // Ctrl+L wipes the screen without touching the conversation, like a shell.
-  const onKeypress = (_chunk, key) => {
-    if (!key || !key.ctrl || key.name !== 'l') return
-    clearScreen()
-    renderBanner()
-    terminal.prompt(true)
-  }
-  if (stdin.isTTY) stdin.on('keypress', onKeypress)
 
   try {
     if (options.prompt) {
@@ -570,8 +573,9 @@ async function main() {
       return
     }
     while (true) {
-      let input
-      try { input = (await terminal.question(`${INDENT}${promptLabel()}`)).trim() } catch { break }
+      const raw = await prompt.ask(`${INDENT}${promptLabel()}`)
+      if (raw === null) break
+      const input = raw.trim()
       if (!input) continue
       if (input.startsWith('/')) {
         if (await handleCommand(input) === 'exit') break
@@ -580,8 +584,6 @@ async function main() {
   } finally {
     await persistPreferences()
     process.off('SIGINT', onInterrupt)
-    if (stdin.isTTY) stdin.off('keypress', onKeypress)
-    terminal.close()
   }
 }
 
