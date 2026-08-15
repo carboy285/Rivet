@@ -1,4 +1,4 @@
-import { stdout } from 'node:process'
+import { stdin, stdout } from 'node:process'
 
 const colorEnabled = Boolean(stdout.isTTY && !process.env.NO_COLOR)
 const unicodeEnabled = process.platform !== 'win32' || Boolean(process.env.WT_SESSION)
@@ -272,6 +272,87 @@ export function approvalCard(name, input) {
 export function approvalQuestion() {
   const options = `${ui.bold('y')}${ui.muted('es')} ${ui.muted(glyph.bullet)} ${ui.bold('n')}${ui.muted('o')} ${ui.muted(glyph.bullet)} ${ui.bold('a')}${ui.muted('lways')}`
   return `${INDENT}${ui.yellow(glyph.bl)}  ${options} ${ui.yellow(glyph.arrow)} `
+}
+
+/**
+ * Interactive arrow-key picker. Renders a list once, then redraws in place as
+ * ↑/↓ move focus; enter resolves with the highlighted item, esc/ctrl-c with
+ * null. Pauses the readline interface (if given) so its keypress handling does
+ * not fight with ours, and restores raw mode + cursor on exit.
+ */
+export async function selectFromList({ terminal, title, items, currentId, hint }) {
+  if (!stdout.isTTY || !stdin.isTTY || !items.length) return null
+
+  return new Promise((resolve) => {
+    const startIndex = items.findIndex((item) => item.id === currentId)
+    let focused = startIndex >= 0 ? startIndex : 0
+    const wasRaw = Boolean(stdin.isRaw)
+    let lastLineCount = 0
+    const cols = stdout.columns || 80
+
+    function build() {
+      const labelWidth = Math.max(20, cols - 12)
+      const parts = []
+      if (title) parts.push(heading(title))
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index]
+        const isFocused = index === focused
+        const isCurrent = item.id === currentId
+        const marker = isFocused ? ui.accent(glyph.dot) : ui.muted(glyph.ring)
+        const label = clip(item.label, labelWidth)
+        const text = isFocused ? ui.bold(ui.accent(label)) : (isCurrent ? ui.bold(label) : label)
+        const note = isCurrent ? ` ${ui.muted('(loaded)')}` : ''
+        parts.push(`${INDENT}${marker} ${text}${note}\n`)
+      }
+      parts.push(`\n${INDENT}${ui.muted(hint || `${glyph.arrow} ↑/↓ move  ${glyph.bullet} enter select  ${glyph.bullet} esc cancel`)}\n`)
+      return parts.join('')
+    }
+
+    function render(first) {
+      if (!first && lastLineCount > 0) stdout.write(`[${lastLineCount}A\r[J`)
+      const output = build()
+      stdout.write(output)
+      // Count trailing newlines to know how many lines to walk back on next redraw.
+      lastLineCount = (output.match(/\n/g) || []).length
+    }
+
+    function cleanup() {
+      stdin.removeListener('keypress', onKey)
+      if (stdin.setRawMode) stdin.setRawMode(wasRaw)
+      stdout.write('[?25h')
+      terminal?.resume?.()
+    }
+
+    function onKey(_char, key) {
+      if (!key) return
+      if (key.name === 'up' || key.name === 'k') {
+        focused = (focused - 1 + items.length) % items.length
+        render(false)
+      } else if (key.name === 'down' || key.name === 'j') {
+        focused = (focused + 1) % items.length
+        render(false)
+      } else if (key.name === 'home') {
+        focused = 0
+        render(false)
+      } else if (key.name === 'end') {
+        focused = items.length - 1
+        render(false)
+      } else if (key.name === 'return') {
+        cleanup()
+        resolve(items[focused])
+      } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
+        cleanup()
+        resolve(null)
+      }
+    }
+
+    terminal?.pause?.()
+    if (stdin.setRawMode) stdin.setRawMode(true)
+    stdin.resume()
+    stdout.write('[?25l')
+    stdin.on('keypress', onKey)
+    render(true)
+  })
 }
 
 /** Two-column command list used by /help. */

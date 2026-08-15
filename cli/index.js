@@ -26,6 +26,7 @@ import {
   INDENT,
   promptLabel,
   section,
+  selectFromList,
   statusLine,
   toolCallLine,
   toolResultLine,
@@ -324,12 +325,37 @@ async function main() {
     },
     {
       name: '/model',
-      usage: '/model <id|auto>',
-      summary: 'Change the active model',
-      handler(argument) {
-        if (!argument) { stdout.write(usageLine('/model <id|auto>')); return }
-        settings = { ...settings, model: argument }
-        stdout.write(statusLine('ok', `Model set to ${ui.bold(argument)}`))
+      usage: '/model [id|auto]',
+      summary: 'Pick a model — arrow keys navigate, enter loads',
+      async handler(argument) {
+        if (argument) {
+          settings = { ...settings, model: argument }
+          stdout.write(statusLine('ok', `Model set to ${ui.bold(argument)}`))
+          return
+        }
+        try {
+          models = await getModels(options.url, AbortSignal.timeout(5000))
+          connected = true
+        } catch (error) {
+          stdout.write(errorLine(friendlyError(error, options.url)))
+          return
+        }
+        if (!models.length) {
+          stdout.write(statusLine('warn', 'No models are loaded in LM Studio.'))
+          return
+        }
+        if (!stdin.isTTY) {
+          stdout.write(usageLine('/model <id|auto>'))
+          return
+        }
+        const items = [
+          { id: 'auto', label: 'auto — first loaded model' },
+          ...models.map((model) => ({ id: model.id, label: model.id })),
+        ]
+        const picked = await selectFromList({ terminal, title: 'select model', items, currentId: settings.model })
+        if (!picked) { stdout.write(statusLine('info', 'Selection cancelled.')); return }
+        settings = { ...settings, model: picked.id }
+        stdout.write(statusLine('ok', `Model set to ${ui.bold(picked.id)}`))
       },
     },
     {
