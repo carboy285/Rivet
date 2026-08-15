@@ -1,5 +1,55 @@
 import { toolDefinitions } from '../tools/tool-definitions.js'
 
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+const MAX_SSE_LINE_BYTES = 1024 * 1024
+const MAX_TOOL_CALLS = 32
+const MAX_TOOL_ARGUMENT_BYTES = 2 * 1024 * 1024
+const MAX_MODELS = 1000
+const MAX_REQUEST_MS = 5 * 60 * 1000
+
+function responseLimitError() {
+  return new Error('LM Studio response exceeds the 8 MB limit.')
+}
+
+function requestSignal(signal) {
+  const deadline = AbortSignal.timeout(MAX_REQUEST_MS)
+  return signal ? AbortSignal.any([signal, deadline]) : deadline
+}
+
+async function readResponseText(response) {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) throw responseLimitError()
+  if (!response.body) return ''
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let total = 0
+  let text = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => {})
+      throw responseLimitError()
+    }
+    text += decoder.decode(value, { stream: true })
+  }
+  return text + decoder.decode()
+}
+
+async function readResponseJson(response) {
+  return JSON.parse(await readResponseText(response))
+}
+
+function appendFragment(current, value, limit, label) {
+  if (value === undefined || value === null) return current
+  if (typeof value !== 'string') throw new Error('LM Studio returned an invalid ' + label + '.')
+  const next = current + value
+  if (Buffer.byteLength(next) > limit) throw new Error('LM Studio ' + label + ' exceeds the local limit.')
+  return next
+}
+
 function joinContent(content) {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -24,12 +74,38 @@ function contentToolCalls(content) {
 }
 
 function collectToolCall(toolCalls, fragment) {
-  const index = fragment.index || 0
+  const index = fragment.index ?? 0
+  if (!Number.isInteger(index) || index < 0 || index >= MAX_TOOL_CALLS) {
+    throw new Error('LM Studio returned an invalid tool-call index.')
+  }
   const current = toolCalls[index] || { id: '', type: 'function', function: { name: '', arguments: '' } }
-  if (fragment.id) current.id += fragment.id
-  if (fragment.function?.name) current.function.name += fragment.function.name
-  if (fragment.function?.arguments) current.function.arguments += fragment.function.arguments
+  current.id = appendFragment(current.id, fragment.id, 1024, 'tool-call id')
+  current.function.name = appendFragment(current.function.name, fragment.function?.name, 256, 'tool name')
+  current.function.arguments = appendFragment(
+    current.function.arguments,
+    fragment.function?.arguments,
+    MAX_TOOL_ARGUMENT_BYTES,
+    'tool arguments',
+  )
   toolCalls[index] = current
+}
+
+function validateToolCalls(toolCalls) {
+  if (!Array.isArray(toolCalls)) return []
+  if (toolCalls.length > MAX_TOOL_CALLS) throw new Error('LM Studio returned too many tool calls.')
+  return toolCalls.map((call) => {
+    if (!call || typeof call !== 'object' || !call.function || typeof call.function !== 'object') {
+      throw new Error('LM Studio returned an invalid tool call.')
+    }
+    if (call.id !== undefined && typeof call.id !== 'string') throw new Error('LM Studio returned an invalid tool-call id.')
+    if (typeof call.function.name !== 'string' || Buffer.byteLength(call.function.name) > 256) {
+      throw new Error('LM Studio returned an invalid tool name.')
+    }
+    if (typeof call.function.arguments !== 'string' || Buffer.byteLength(call.function.arguments) > MAX_TOOL_ARGUMENT_BYTES) {
+      throw new Error('LM Studio tool arguments exceed the local limit.')
+    }
+    return call
+  })
 }
 
 function messageFromJson(payload, onText) {
@@ -38,18 +114,24 @@ function messageFromJson(payload, onText) {
   const message = choice.message || {}
   const content = joinContent(message.content)
   if (content) onText(content)
-  return { content, toolCalls: message.tool_calls?.length ? message.tool_calls : contentToolCalls(message.content), finishReason: choice.finish_reason }
+  const toolCalls = message.tool_calls?.length ? message.tool_calls : contentToolCalls(message.content)
+  return { content, toolCalls: validateToolCalls(toolCalls), finishReason: choice.finish_reason }
 }
 
 async function streamMessage(response, onText) {
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) throw responseLimitError()
+  if (!response.body) throw new Error('LM Studio returned an empty response body.')
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const toolCalls = []
   let content = ''
   let buffer = ''
   let finishReason = null
+  let totalBytes = 0
 
   function consumeLine(line) {
+    if (Buffer.byteLength(line) > MAX_SSE_LINE_BYTES) throw new Error('LM Studio SSE line exceeds the 1 MB limit.')
     const trimmed = line.trim()
     if (!trimmed.startsWith('data:')) return
     const data = trimmed.slice(5).trim()
@@ -68,9 +150,18 @@ async function streamMessage(response, onText) {
 
   while (true) {
     const { done, value } = await reader.read()
+    totalBytes += value?.byteLength || 0
+    if (totalBytes > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => {})
+      throw responseLimitError()
+    }
     buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
     const lines = buffer.split(/\r?\n/)
     buffer = lines.pop() || ''
+    if (Buffer.byteLength(buffer) > MAX_SSE_LINE_BYTES) {
+      await reader.cancel().catch(() => {})
+      throw new Error('LM Studio SSE line exceeds the 1 MB limit.')
+    }
     for (const line of lines) consumeLine(line)
     if (done) break
   }
@@ -90,24 +181,28 @@ async function modelCompletion({ baseUrl, model, messages, temperature, maxToken
       max_tokens: maxTokens,
       stream: true,
     }),
-    signal,
+    signal: requestSignal(signal),
   })
 
   if (!response.ok) {
-    const detail = (await response.text()).slice(0, 1000)
+    const detail = (await readResponseText(response)).slice(0, 1000)
     throw new Error(`LM Studio request failed (${response.status}): ${detail || response.statusText}`)
   }
 
   const contentType = response.headers.get('content-type') || ''
-  if (contentType.includes('application/json')) return messageFromJson(await response.json(), onText)
+  if (contentType.includes('application/json')) return messageFromJson(await readResponseJson(response), onText)
   return streamMessage(response, onText)
 }
 
 export async function getModels(baseUrl, signal) {
-  const response = await fetch(`${baseUrl}/models`, { signal })
+  const response = await fetch(`${baseUrl}/models`, { signal: requestSignal(signal) })
   if (!response.ok) throw new Error(`LM Studio model request failed (${response.status}).`)
-  const payload = await response.json()
-  return (payload.data || []).map((item) => ({ id: item.id, ownedBy: item.owned_by || 'local' })).filter((item) => item.id)
+  const payload = await readResponseJson(response)
+  const data = Array.isArray(payload.data) ? payload.data : []
+  if (data.length > MAX_MODELS) throw new Error('LM Studio returned too many models.')
+  return data
+    .map((item) => ({ id: item.id, ownedBy: item.owned_by || 'local' }))
+    .filter((item) => typeof item.id === 'string' && Buffer.byteLength(item.id) <= 1000)
 }
 
 /** LM Studio's native REST API lists every downloaded model along with its
@@ -115,19 +210,21 @@ export async function getModels(baseUrl, signal) {
  *  loaded ones, so we hit /api/v0/models on the same origin instead. */
 export async function getAllModelsWithState(baseUrl, signal) {
   const origin = new URL(baseUrl).origin
-  const response = await fetch(`${origin}/api/v0/models`, { signal })
+  const response = await fetch(`${origin}/api/v0/models`, { signal: requestSignal(signal) })
   if (!response.ok) throw new Error(`LM Studio native API failed (${response.status}).`)
-  const payload = await response.json()
-  return (payload.data || [])
+  const payload = await readResponseJson(response)
+  const data = Array.isArray(payload.data) ? payload.data : []
+  if (data.length > MAX_MODELS) throw new Error('LM Studio returned too many models.')
+  return data
     .map((item) => ({ id: item.id, state: item.state, type: item.type }))
-    .filter((item) => item.id)
+    .filter((item) => typeof item.id === 'string' && Buffer.byteLength(item.id) <= 1000)
 }
 
 const SUMMARY_INSTRUCTION = 'Summarize the conversation above concisely and factually, in plain notes (not a transcript). Preserve important facts, decisions, file paths, and outstanding tasks so work can continue from the summary alone.'
 
 export async function summarizeConversation({ baseUrl, model, conversation, maxTokens, signal }) {
   const messages = [
-    { role: 'system', content: 'You summarize coding-agent conversations concisely and factually.' },
+    { role: 'system', content: 'You summarize Rivet conversations concisely and factually.' },
     ...conversation,
     { role: 'user', content: SUMMARY_INSTRUCTION },
   ]

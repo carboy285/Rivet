@@ -44,19 +44,31 @@ function filterCommands(buffer, commands) {
  * an empty buffer so the caller can shut down cleanly. Ctrl+C with content
  * clears the buffer, matching common shell behavior.
  */
-export function createPromptSession({ getCommands = () => [], onClearScreen } = {}) {
+export function createPromptSession({ getCommands = () => [], getStatusLine, onClearScreen } = {}) {
   const history = []
+  // Set only while the main ask() loop is waiting at the prompt — lets a
+  // background timer (e.g. the models-list poller) redraw just the status
+  // line above the input, on top of whatever the user has typed so far.
+  // Stays null during a model turn or an approval question(), so the poller
+  // can't fire mid-stream or clobber an approval card. Unlike Ctrl+L, this
+  // never clears the screen — it only rewrites the few lines it drew itself,
+  // so scrollback (the chat so far) is never touched.
+  let activeRefresh = null
   return {
     ask(promptString) {
-      return readLine({ promptString, commands: getCommands(), history, onClearScreen, allowPicker: true, addHistory: true })
+      return readLine({
+        promptString, commands: getCommands(), history, onClearScreen, getStatusLine, allowPicker: true, addHistory: true,
+        registerRefresh: (fn) => { activeRefresh = fn },
+      })
     },
     question(promptString) {
       return readLine({ promptString, commands: [], history: [], onClearScreen, allowPicker: false, addHistory: false })
     },
+    refresh() { activeRefresh?.() },
   }
 }
 
-function readLine({ promptString, commands, history, onClearScreen, allowPicker, addHistory }) {
+function readLine({ promptString, commands, history, onClearScreen, getStatusLine, allowPicker, addHistory, registerRefresh }) {
   return new Promise((resolve) => {
     let buffer = ''
     let cursor = 0
@@ -109,21 +121,37 @@ function readLine({ promptString, commands, history, onClearScreen, allowPicker,
       return rows
     }
 
-    function draw(first) {
+    function aboveRows() {
       const list = matches()
+      if (list.length) return renderPickerRows(list)
+      // No picker showing — leave room for a one-line live status (the
+      // models-list poller) instead, if the caller supplied one.
+      const status = allowPicker ? getStatusLine?.() : null
+      return status ? [status] : []
+    }
+
+    function draw(first) {
       if (!first) eraseDrawn()
 
-      const pickerRows = list.length ? renderPickerRows(list) : []
-      if (pickerRows.length) stdout.write(`${pickerRows.join('\n')}\n`)
+      const rowsAbove = aboveRows()
+      if (rowsAbove.length) stdout.write(`${rowsAbove.join('\n')}\n`)
 
       stdout.write(`${promptString}${buffer}`)
       const trailing = buffer.length - cursor
       if (trailing > 0) stdout.write(`[${trailing}D`)
 
-      linesAbove = pickerRows.length
+      linesAbove = rowsAbove.length
+    }
+
+    function refreshFromOutside() {
+      clearScreen()
+      onClearScreen?.()
+      linesAbove = 0
+      draw(true)
     }
 
     function finish(value) {
+      registerRefresh?.(null)
       stdin.removeListener('keypress', onKey)
       if (stdin.setRawMode) stdin.setRawMode(wasRaw)
       eraseDrawn()
@@ -140,6 +168,7 @@ function readLine({ promptString, commands, history, onClearScreen, allowPicker,
     }
 
     function cancel() {
+      registerRefresh?.(null)
       stdin.removeListener('keypress', onKey)
       if (stdin.setRawMode) stdin.setRawMode(wasRaw)
       eraseDrawn()
@@ -161,10 +190,7 @@ function readLine({ promptString, commands, history, onClearScreen, allowPicker,
       }
       if (key.ctrl && key.name === 'd' && buffer.length === 0) { cancel(); return }
       if (key.ctrl && key.name === 'l') {
-        clearScreen()
-        onClearScreen?.()
-        linesAbove = 0
-        draw(true)
+        refreshFromOutside()
         return
       }
 
@@ -295,6 +321,7 @@ function readLine({ promptString, commands, history, onClearScreen, allowPicker,
     }
 
     stdin.on('keypress', onKey)
+    registerRefresh?.(() => draw(false))
     draw(true)
   })
 }

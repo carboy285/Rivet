@@ -7,8 +7,9 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { stdin, stdout } from 'node:process'
-import { parseArgs, normalizeBaseUrl, HELP, VERSION } from './args.js'
+import { isInsecureRemoteUrl, parseArgs, normalizeBaseUrl, HELP, VERSION } from './args.js'
 import { createApprovedRuntime } from './approval.js'
+import { gitDiffArgs } from './git.js'
 import { createPromptSession } from './prompt.js'
 import {
   agentLabel,
@@ -24,7 +25,9 @@ import {
   glyph,
   heading,
   INDENT,
+  modelsStatusLine,
   promptLabel,
+  sanitizeTerminalText,
   section,
   selectFromList,
   statusLine,
@@ -76,7 +79,7 @@ function friendlyError(error, baseUrl) {
 }
 
 function buildTranscript({ project, model, baseUrl, conversation }) {
-  const header = `# Coding Agent Transcript\n\nProject: ${project}\nModel: ${model}\nServer: ${baseUrl}\nExported: ${new Date().toISOString()}\n\n---\n\n`
+  const header = `# Rivet Transcript\n\nProject: ${project}\nModel: ${model}\nServer: ${baseUrl}\nExported: ${new Date().toISOString()}\n\n---\n\n`
   const body = conversation.map((message) => `### ${message.role}\n\n${message.content}\n`).join('\n')
   return `${header}${body}\n`
 }
@@ -118,7 +121,17 @@ async function main() {
   if (!options.explicit.has('temperature')) options.temperature = savedPreferences.temperature
   if (!options.explicit.has('maxTokens')) options.maxTokens = savedPreferences.maxTokens
   if (!options.explicit.has('verboseTools')) options.verboseTools = savedPreferences.verboseTools
-  if (!options.explicit.has('url') && savedPreferences.serverUrl) options.url = savedPreferences.serverUrl
+  let savedUrlWarning = ''
+  if (!options.explicit.has('url') && savedPreferences.serverUrl) {
+    try {
+      options.url = normalizeBaseUrl(savedPreferences.serverUrl, {
+        allowInsecureRemote: savedPreferences.allowInsecureHttp,
+      })
+      options.allowInsecureHttp = Boolean(savedPreferences.allowInsecureHttp)
+    } catch (error) {
+      savedUrlWarning = 'Ignored an unsafe saved server URL: ' + error.message
+    }
+  }
 
   let settings = normalizeSettings({
     systemPrompt: process.env.CODING_AGENT_SYSTEM_PROMPT || savedPreferences.systemPrompt,
@@ -130,7 +143,14 @@ async function main() {
   let activeController = null
 
   async function persistPreferences() {
-    try { await settingsStore.set({ ...settings, verboseTools: options.verboseTools, serverUrl: options.url }) }
+    try {
+      await settingsStore.set({
+        ...settings,
+        verboseTools: options.verboseTools,
+        serverUrl: options.url,
+        allowInsecureHttp: options.allowInsecureHttp,
+      })
+    }
     catch { /* best-effort — a read-only project folder should not block exit */ }
   }
 
@@ -140,6 +160,7 @@ async function main() {
   let commands = []
   const prompt = createPromptSession({
     getCommands: () => commands,
+    getStatusLine: () => modelsStatusLine(allModels),
     onClearScreen: () => renderBanner(),
   })
 
@@ -170,9 +191,14 @@ async function main() {
     return settings.model === 'auto' && models.length ? models[0].id : settings.model
   }
 
-  async function refreshModelCatalog(timeoutMs = 2500) {
+  async function refreshModelCatalog(timeoutMs = 2500, { keepOnError = false } = {}) {
     try { allModels = await getAllModelsWithState(options.url, AbortSignal.timeout(timeoutMs)) }
-    catch { allModels = [] /* native REST API may be unreachable; banner just omits the column */ }
+    catch {
+      // Native REST API may be unreachable. A background poll keeps showing
+      // the last known list rather than flickering it away on one bad beat;
+      // an explicit refresh (startup, /server, /model) clears it instead.
+      if (!keepOnError) allModels = []
+    }
   }
 
   function renderBanner() {
@@ -194,6 +220,7 @@ async function main() {
   await refreshModelCatalog()
   clearScreen()
   renderBanner()
+  if (savedUrlWarning) stdout.write(statusLine('warn', sanitizeTerminalText(savedUrlWarning)))
 
   async function runTurn(prompt) {
     const userMessage = { role: 'user', content: prompt }
@@ -230,7 +257,11 @@ async function main() {
         toolStartedAt.delete(event.toolCallId)
         stdout.write(toolResultLine(event.toolName, event.result, event.isError, startedAt ? Date.now() - startedAt : undefined))
         if (options.verboseTools) {
-          stdout.write(`${ui.muted(JSON.stringify(event.result, null, 2).split('\n').map((line) => `${INDENT}${INDENT}${line}`).join('\n'))}\n`)
+          const resultText = sanitizeTerminalText(JSON.stringify(event.result, null, 2), {
+            preserveNewlines: true,
+            preserveTabs: true,
+          })
+          stdout.write(`${ui.muted(resultText.split('\n').map((line) => `${INDENT}${INDENT}${line}`).join('\n'))}\n`)
         }
         spinner.start()
       }
@@ -285,7 +316,7 @@ async function main() {
             maxTokens: nextPreferences.maxTokens,
           })
           options.verboseTools = nextPreferences.verboseTools
-          stdout.write(statusLine('ok', `Opened ${workspace.info().path}`, `${glyph.bullet} conversation and approvals reset`))
+          stdout.write(statusLine('ok', `Opened ${sanitizeTerminalText(workspace.info().path)}`, `${glyph.bullet} conversation and approvals reset`))
         } catch (error) { stdout.write(errorLine(error.message)) }
       },
     },
@@ -297,8 +328,8 @@ async function main() {
         if (!argument) { stdout.write(usageLine('/add-dir /absolute/path/to/folder')); return }
         try {
           const info = await workspace.addDir(argument)
-          stdout.write(statusLine('ok', `Added ${info.extraDirs[info.extraDirs.length - 1]}`))
-          stdout.write(`${INDENT}${ui.muted(`accessible: ${[info.path, ...info.extraDirs].join(', ')}`)}\n`)
+          stdout.write(statusLine('ok', `Added ${sanitizeTerminalText(info.extraDirs[info.extraDirs.length - 1])}`))
+          stdout.write(`${INDENT}${ui.muted('accessible: ' + sanitizeTerminalText([info.path, ...info.extraDirs].join(', ')))}\n`)
         } catch (error) { stdout.write(errorLine(error.message)) }
       },
     },
@@ -309,18 +340,30 @@ async function main() {
       async handler(argument) {
         if (!argument) { stdout.write(usageLine('/server <url>')); return }
         let nextUrl
-        try { nextUrl = normalizeBaseUrl(argument) } catch (error) { stdout.write(errorLine(error.message)); return }
+        try { nextUrl = normalizeBaseUrl(argument, { allowInsecureRemote: true }) } catch (error) { stdout.write(errorLine(error.message)); return }
+        if (isInsecureRemoteUrl(nextUrl)) {
+          stdout.write(statusLine('warn', 'This remote server uses cleartext HTTP; prompts and files may be intercepted.'))
+          const answer = await prompt.question(INDENT + 'Type yes to use it for this session ' + glyph.arrow + ' ')
+          stdout.write('\n')
+          if (answer?.trim().toLowerCase() !== 'yes') {
+            stdout.write(statusLine('info', 'Server change cancelled.'))
+            return
+          }
+          options.allowInsecureHttp = true
+        } else {
+          options.allowInsecureHttp = false
+        }
         options.url = nextUrl
         try {
           models = await getModels(nextUrl, AbortSignal.timeout(5000))
           connected = true
           await refreshModelCatalog(5000)
-          stdout.write(statusLine('ok', `Server set to ${nextUrl}`, `${glyph.bullet} ${models.length} model(s) loaded`))
+          stdout.write(statusLine('ok', `Server set to ${sanitizeTerminalText(nextUrl)}`, `${glyph.bullet} ${models.length} model(s) loaded`))
         } catch (error) {
           connected = false
           allModels = []
-          stdout.write(statusLine('ok', `Server set to ${nextUrl}`))
-          stdout.write(statusLine('warn', friendlyError(error, nextUrl)))
+          stdout.write(statusLine('ok', `Server set to ${sanitizeTerminalText(nextUrl)}`))
+          stdout.write(statusLine('warn', sanitizeTerminalText(friendlyError(error, nextUrl))))
         }
       },
     },
@@ -331,7 +374,7 @@ async function main() {
       async handler(argument) {
         if (argument) {
           settings = { ...settings, model: argument }
-          stdout.write(statusLine('ok', `Model set to ${ui.bold(argument)}`))
+          stdout.write(statusLine('ok', `Model set to ${ui.bold(sanitizeTerminalText(argument))}`))
           return
         }
         try {
@@ -357,7 +400,7 @@ async function main() {
         const picked = await selectFromList({ title: 'select model', items, currentId: settings.model })
         if (!picked) { stdout.write(statusLine('info', 'Selection cancelled.')); return }
         settings = { ...settings, model: picked.id }
-        stdout.write(statusLine('ok', `Model set to ${ui.bold(picked.id)}`))
+        stdout.write(statusLine('ok', `Model set to ${ui.bold(sanitizeTerminalText(picked.id))}`))
       },
     },
     {
@@ -367,7 +410,7 @@ async function main() {
       handler(argument) {
         if (!argument) {
           const flattened = settings.systemPrompt.replace(/\s+/g, ' ').trim()
-          const prompt = flattened.length > 120 ? `${flattened.slice(0, 120)}…` : flattened
+          const prompt = sanitizeTerminalText(flattened.length > 120 ? `${flattened.slice(0, 120)}…` : flattened)
           stdout.write(section('config', [
             ['temperature', settings.temperature],
             ['maxTokens', settings.maxTokens],
@@ -397,13 +440,13 @@ async function main() {
       summary: 'Show the project, model, server, and approval mode',
       handler() {
         const info = workspace.info()
-        const entries = [['project', info.path]]
-        if (info.extraDirs?.length) entries.push(['extra dirs', info.extraDirs.join(', ')])
+        const entries = [['project', sanitizeTerminalText(info.path)]]
+        if (info.extraDirs?.length) entries.push(['extra dirs', sanitizeTerminalText(info.extraDirs.join(', '))])
         entries.push(
-          ['model', `${activeModel()}  ${connected ? ui.green(`${glyph.dot} connected`) : ui.yellow(`${glyph.ring} offline`)}`],
+          ['model', `${sanitizeTerminalText(activeModel())}  ${connected ? ui.green(`${glyph.dot} connected`) : ui.yellow(`${glyph.ring} offline`)}`],
           ['temperature', settings.temperature],
           ['max tokens', settings.maxTokens],
-          ['server', options.url],
+          ['server', sanitizeTerminalText(options.url) + (isInsecureRemoteUrl(options.url) ? ' ' + ui.yellow('(insecure HTTP)') : '')],
           ['approvals', approvals.approveAll ? ui.yellow('automatic for this session') : 'ask before changes'],
           ['turns', conversation.length],
         )
@@ -439,7 +482,7 @@ async function main() {
         const transcript = buildTranscript({ project: workspace.info().path, model: settings.model, baseUrl: options.url, conversation })
         try {
           await fs.writeFile(target, transcript, 'utf8')
-          stdout.write(statusLine('ok', `Exported to ${target}`))
+          stdout.write(statusLine('ok', `Exported to ${sanitizeTerminalText(target)}`))
         } catch (error) { stdout.write(errorLine(error.message)) }
       },
     },
@@ -450,21 +493,22 @@ async function main() {
       async handler(argument) {
         const projectPath = workspace.info().path
         try {
-          const { stdout: diffOutput } = await execFileAsync('git', ['-C', projectPath, 'diff', '--color=never', ...(argument ? [argument] : [])], { maxBuffer: 2 * 1024 * 1024 })
+          const { stdout: diffOutput } = await execFileAsync('git', gitDiffArgs(projectPath, argument), { maxBuffer: 2 * 1024 * 1024 })
           if (!diffOutput.trim()) { stdout.write(statusLine('info', 'No changes.')); return }
           stdout.write(heading('diff'))
           for (const line of diffOutput.replace(/\n$/, '').split('\n')) {
-            if (line.startsWith('+++') || line.startsWith('---')) stdout.write(`${INDENT}${ui.bold(line)}\n`)
-            else if (line.startsWith('@@')) stdout.write(`${INDENT}${ui.cyan(line)}\n`)
-            else if (line.startsWith('+')) stdout.write(`${INDENT}${ui.green(line)}\n`)
-            else if (line.startsWith('-')) stdout.write(`${INDENT}${ui.red(line)}\n`)
-            else if (line.startsWith('diff ') || line.startsWith('index ')) stdout.write(`${INDENT}${ui.muted(line)}\n`)
-            else stdout.write(`${INDENT}${line}\n`)
+            const safeLine = sanitizeTerminalText(line)
+            if (line.startsWith('+++') || line.startsWith('---')) stdout.write(`${INDENT}${ui.bold(safeLine)}\n`)
+            else if (line.startsWith('@@')) stdout.write(`${INDENT}${ui.cyan(safeLine)}\n`)
+            else if (line.startsWith('+')) stdout.write(`${INDENT}${ui.green(safeLine)}\n`)
+            else if (line.startsWith('-')) stdout.write(`${INDENT}${ui.red(safeLine)}\n`)
+            else if (line.startsWith('diff ') || line.startsWith('index ')) stdout.write(`${INDENT}${ui.muted(safeLine)}\n`)
+            else stdout.write(`${INDENT}${safeLine}\n`)
           }
           stdout.write('\n')
         } catch (error) {
           if (error.code === 'ENOENT') stdout.write(errorLine('git is not installed or not on PATH.'))
-          else if (/not a git repository/i.test(error.stderr || error.message)) stdout.write(statusLine('warn', `${projectPath} is not a git repository.`))
+          else if (/not a git repository/i.test(error.stderr || error.message)) stdout.write(statusLine('warn', `${sanitizeTerminalText(projectPath)} is not a git repository.`))
           else stdout.write(errorLine((error.stderr || error.message).trim()))
         }
       },
@@ -480,15 +524,15 @@ async function main() {
         checks.push({ ok: nodeMajor >= 20, name: 'Node.js version', detail: process.version })
         try {
           const doctorModels = await getModels(options.url, AbortSignal.timeout(3000))
-          checks.push({ ok: true, name: 'LM Studio server', detail: `${options.url} ${glyph.bullet} ${doctorModels.length} model(s) loaded` })
+          checks.push({ ok: true, name: 'LM Studio server', detail: `${sanitizeTerminalText(options.url)} ${glyph.bullet} ${doctorModels.length} model(s) loaded` })
         } catch (error) {
-          checks.push({ ok: false, name: 'LM Studio server', detail: friendlyError(error, options.url) })
+          checks.push({ ok: false, name: 'LM Studio server', detail: sanitizeTerminalText(friendlyError(error, options.url)) })
         }
         try {
           await fs.access(workspace.info().path, fsConstants.R_OK | fsConstants.W_OK)
-          checks.push({ ok: true, name: 'Project folder', detail: workspace.info().path })
+          checks.push({ ok: true, name: 'Project folder', detail: sanitizeTerminalText(workspace.info().path) })
         } catch (error) {
-          checks.push({ ok: false, name: 'Project folder', detail: error.message })
+          checks.push({ ok: false, name: 'Project folder', detail: sanitizeTerminalText(error.message) })
         }
         try {
           await execFileAsync('git', ['--version'])
@@ -550,7 +594,7 @@ async function main() {
     const entry = commands.find((candidate) => candidate.name === command || (candidate.aliases || []).includes(command))
     if (!entry) {
       const suggestion = commands.find((candidate) => candidate.name.startsWith(command))
-      stdout.write(statusLine('warn', `Unknown command ${ui.bold(command)}`, suggestion ? `${glyph.bullet} did you mean ${suggestion.name}?` : `${glyph.bullet} type /help`))
+      stdout.write(statusLine('warn', `Unknown command ${ui.bold(sanitizeTerminalText(command))}`, suggestion ? `${glyph.bullet} did you mean ${suggestion.name}?` : `${glyph.bullet} type /help`))
       return
     }
     return entry.handler(argument)
@@ -563,6 +607,19 @@ async function main() {
     if (activeController) activeController.abort()
   }
   process.on('SIGINT', onInterrupt)
+
+  // Keep the models column current without an explicit /model or /server.
+  // prompt.refresh() is a no-op whenever the reader isn't idle at an empty
+  // prompt line (mid-turn, approval question, or the picker is open), so this
+  // never stomps on in-progress output.
+  let modelPollTimer = null
+  if (!options.prompt && stdout.isTTY) {
+    modelPollTimer = setInterval(async () => {
+      await refreshModelCatalog(3000, { keepOnError: true })
+      prompt.refresh()
+    }, 5000)
+    modelPollTimer.unref?.()
+  }
 
   try {
     if (options.prompt) {
@@ -579,6 +636,7 @@ async function main() {
       } else await runTurn(input)
     }
   } finally {
+    if (modelPollTimer) clearInterval(modelPollTimer)
     await persistPreferences()
     process.off('SIGINT', onInterrupt)
   }

@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import os from 'node:os'
 import path from 'node:path'
 
 export const DEFAULT_SYSTEM_PROMPT = `You are an autonomous coding agent working inside the user's selected local project.
@@ -32,6 +34,7 @@ export const DEFAULT_PREFERENCES = {
   ...DEFAULT_SETTINGS,
   verboseTools: false,
   serverUrl: '',
+  allowInsecureHttp: false,
 }
 
 /** Settings plus the CLI-only preferences (verbose tool output, server URL) that ride along in the same file. */
@@ -40,12 +43,27 @@ export function normalizePreferences(value = {}) {
     ...normalizeSettings(value),
     verboseTools: Boolean(value.verboseTools),
     serverUrl: typeof value.serverUrl === 'string' && value.serverUrl.trim() ? value.serverUrl.trim().slice(0, 2000) : '',
+    allowInsecureHttp: Boolean(value.allowInsecureHttp),
   }
 }
 
-export function createSettingsStore(projectRoot) {
-  const directory = path.join(projectRoot, '.local-coding-agent')
-  const settingsPath = path.join(directory, 'settings.json')
+function defaultConfigRoot() {
+  if (process.platform === 'win32' && process.env.APPDATA) return path.join(process.env.APPDATA, 'Rivet')
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'Rivet')
+  if (process.env.XDG_CONFIG_HOME && path.isAbsolute(process.env.XDG_CONFIG_HOME)) {
+    return path.join(process.env.XDG_CONFIG_HOME, 'rivet')
+  }
+  return path.join(os.homedir(), '.config', 'rivet')
+}
+
+export function settingsPathForProject(projectRoot, configRoot = defaultConfigRoot()) {
+  const projectId = createHash('sha256').update(path.resolve(projectRoot)).digest('hex')
+  return path.join(path.resolve(configRoot), 'projects', projectId + '.json')
+}
+
+export function createSettingsStore(projectRoot, { configRoot = defaultConfigRoot() } = {}) {
+  const settingsPath = settingsPathForProject(projectRoot, configRoot)
+  const directory = path.dirname(settingsPath)
 
   async function get() {
     try {
@@ -59,10 +77,21 @@ export function createSettingsStore(projectRoot) {
 
   async function set(value) {
     const preferences = normalizePreferences(value)
-    await fs.mkdir(directory, { recursive: true })
-    const temporary = `${settingsPath}.${process.pid}.tmp`
-    await fs.writeFile(temporary, `${JSON.stringify(preferences, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-    await fs.rename(temporary, settingsPath)
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 })
+    await fs.chmod(directory, 0o700)
+    const temporary = settingsPath + '.' + process.pid + '.' + randomUUID() + '.tmp'
+    let renamed = false
+    try {
+      await fs.writeFile(temporary, JSON.stringify(preferences, null, 2) + '\n', {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      })
+      await fs.rename(temporary, settingsPath)
+      renamed = true
+    } finally {
+      if (!renamed) await fs.unlink(temporary).catch(() => {})
+    }
     return preferences
   }
 

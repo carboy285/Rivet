@@ -4,6 +4,31 @@ const colorEnabled = Boolean(stdout.isTTY && !process.env.NO_COLOR)
 const unicodeEnabled = process.platform !== 'win32' || Boolean(process.env.WT_SESSION)
 const paint = (code, value) => colorEnabled ? `\u001b[${code}m${value}\u001b[0m` : String(value)
 
+export function sanitizeTerminalText(value, { preserveNewlines = false, preserveTabs = false } = {}) {
+  let result = ''
+  for (const character of String(value ?? '')) {
+    const codePoint = character.codePointAt(0)
+    if (character === '\n' && preserveNewlines) {
+      result += character
+    } else if (character === '\t' && preserveTabs) {
+      result += character
+    } else if (
+      codePoint <= 0x1f
+      || (codePoint >= 0x7f && codePoint <= 0x9f)
+    ) {
+      result += '\\x' + codePoint.toString(16).padStart(2, '0')
+    } else if (
+      (codePoint >= 0x202a && codePoint <= 0x202e)
+      || (codePoint >= 0x2066 && codePoint <= 0x2069)
+    ) {
+      result += '\\u' + codePoint.toString(16).padStart(4, '0')
+    } else {
+      result += character
+    }
+  }
+  return result
+}
+
 export const ui = {
   accent: (value) => paint('38;2;209;255;84', value),
   cyan: (value) => paint('36', value),
@@ -72,7 +97,7 @@ export function statusLine(kind, message, detail = '') {
 }
 
 export function errorLine(message) {
-  return `${INDENT}${ui.red(glyph.fail)} ${ui.red('error')} ${message}\n`
+  return `${INDENT}${ui.red(glyph.fail)} ${ui.red('error')} ${sanitizeTerminalText(message)}\n`
 }
 
 export function usageLine(usage) {
@@ -80,7 +105,7 @@ export function usageLine(usage) {
 }
 
 function clip(value, length = 120) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  const text = sanitizeTerminalText(value).replace(/\s+/g, ' ').trim()
   return text.length > length ? `${text.slice(0, length - 1)}…` : text
 }
 
@@ -99,25 +124,25 @@ export function formatDuration(ms) {
 
 export function toolDescription(name, input = {}) {
   if (name === 'run_command') return clip(input.command)
-  if (name === 'list_files') return input.path || '.'
-  if (name === 'write_file' || name === 'append_file') return `${input.path || '?'} ${glyph.bullet} ${formatBytes(Buffer.byteLength(input.content || ''))}`
-  return input.path || ''
+  if (name === 'list_files') return sanitizeTerminalText(input.path || '.')
+  if (name === 'write_file' || name === 'append_file') return `${sanitizeTerminalText(input.path || '?')} ${glyph.bullet} ${formatBytes(Buffer.byteLength(input.content || ''))}`
+  return sanitizeTerminalText(input.path || '')
 }
 
 export function toolResultDescription(name, result = {}, isError = false) {
-  if (isError) return result.error || 'failed'
-  if (name === 'read_file') return `${result.path} ${glyph.bullet} ${formatBytes(result.size)}`
+  if (isError) return sanitizeTerminalText(result.error || 'failed')
+  if (name === 'read_file') return `${sanitizeTerminalText(result.path)} ${glyph.bullet} ${formatBytes(result.size)}`
   if (name === 'list_files') return `${result.entries?.length || 0} entries${result.truncated ? ' (truncated)' : ''}`
   if (name === 'run_command') return `exit ${result.exitCode}`
-  if (name === 'delete_file') return `deleted ${result.path}`
-  if (name === 'write_file' || name === 'append_file') return `${result.action} ${result.path}`
+  if (name === 'delete_file') return `deleted ${sanitizeTerminalText(result.path)}`
+  if (name === 'write_file' || name === 'append_file') return `${sanitizeTerminalText(result.action)} ${sanitizeTerminalText(result.path)}`
   return 'complete'
 }
 
 /** `  › run_command  npm test` */
 export function toolCallLine(name, input) {
   const detail = toolDescription(name, input)
-  return `${INDENT}${ui.cyan(glyph.tool)} ${ui.bold(name)}${detail ? `  ${ui.muted(detail)}` : ''}\n`
+  return `${INDENT}${ui.cyan(glyph.tool)} ${ui.bold(sanitizeTerminalText(name))}${detail ? `  ${ui.muted(detail)}` : ''}\n`
 }
 
 /** `  └ ✓ exit 0 · 120ms` indented under its call. */
@@ -131,18 +156,19 @@ export function toolResultLine(name, result, isError, elapsedMs) {
 export function banner({ project, url, model, connected, version, approveAll, allModels = [] }) {
   const leftWidth = 56
   const inner = leftWidth - INDENT.length * 2 - 2
-  const title = ` ${glyph.diamond} LOCAL CODING AGENT`
+  const title = ` ${glyph.diamond} RIVET`
   const versionTag = `v${version} `
   const padding = Math.max(1, inner - title.length - versionTag.length)
 
+  const safeModel = sanitizeTerminalText(model)
   const modelValue = connected
-    ? `${model}  ${ui.green(`${glyph.dot} connected`)}`
-    : `${model}  ${ui.yellow(`${glyph.ring} LM Studio offline`)}`
+    ? `${safeModel}  ${ui.green(`${glyph.dot} connected`)}`
+    : `${safeModel}  ${ui.yellow(`${glyph.ring} LM Studio offline`)}`
 
   const rowEntries = [
-    ['project', project],
+    ['project', sanitizeTerminalText(project)],
     ['model', modelValue],
-    ['server', url],
+    ['server', sanitizeTerminalText(url)],
     ['approvals', approveAll ? ui.yellow('auto-approved for this session') : 'ask before changes'],
   ]
   const labelWidth = rowEntries.reduce((max, [label]) => Math.max(max, label.length), 0)
@@ -166,7 +192,8 @@ export function banner({ project, url, model, connected, version, approveAll, al
     for (const item of allModels) {
       const loaded = item.state === 'loaded'
       const mark = loaded ? ui.green(glyph.dot) : ui.muted(glyph.ring)
-      const label = loaded ? item.id : ui.muted(item.id)
+      const safeId = sanitizeTerminalText(item.id)
+      const label = loaded ? safeId : ui.muted(safeId)
       rightLines.push(`${mark} ${label}`)
     }
   } else if (connected) {
@@ -174,15 +201,21 @@ export function banner({ project, url, model, connected, version, approveAll, al
   }
 
   const available = stdout.columns || 80
-  const canFitRight = rightLines.length > 0 && available >= leftWidth + 24
-  const gap = 3
+  const gap = 6
+  // Anchor the right column to the widest left line so it never bleeds into
+  // the project row when the path runs long — every model line starts at the
+  // same column regardless of what the left column happens to be showing.
+  const leftMaxWidth = leftLines.reduce((max, line) => Math.max(max, displayWidth(line)), leftWidth)
+  const rightStart = leftMaxWidth + gap
+  const longestRight = rightLines.reduce((max, line) => Math.max(max, displayWidth(line)), 0)
+  const canFitRight = rightLines.length > 0 && available >= rightStart + longestRight
   const totalLines = canFitRight ? Math.max(leftLines.length, rightLines.length) : leftLines.length
   const parts = ['\n']
   for (let i = 0; i < totalLines; i += 1) {
     const left = leftLines[i] || ''
     const right = canFitRight ? (rightLines[i] || '') : ''
     if (right) {
-      const pad = Math.max(gap, leftWidth + gap - displayWidth(left))
+      const pad = Math.max(gap, rightStart - displayWidth(left))
       parts.push(`${left}${' '.repeat(pad)}${right}\n`)
     } else {
       parts.push(`${left}\n`)
@@ -203,7 +236,7 @@ export function promptLabel() {
 }
 
 export function agentLabel() {
-  return `\n${INDENT}${ui.accent(glyph.diamond)} ${ui.muted('agent')}\n`
+  return `\n${INDENT}${ui.accent(glyph.diamond)} ${ui.muted('rivet')}\n`
 }
 
 /**
@@ -216,7 +249,7 @@ export function createStreamRenderer({ indent = INDENT, width = terminalWidth() 
     let trailingNewline = true
     return {
       feed(text) {
-        const value = String(text)
+        const value = sanitizeTerminalText(text, { preserveNewlines: true, preserveTabs: true })
         if (!value) return
         trailingNewline = value.endsWith('\n')
         stdout.write(value)
@@ -263,7 +296,8 @@ export function createStreamRenderer({ indent = INDENT, width = terminalWidth() 
 
   return {
     feed(text) {
-      for (const character of String(text)) {
+      const safeText = sanitizeTerminalText(text, { preserveNewlines: true, preserveTabs: true })
+      for (const character of safeText) {
         if (character === '\n') { pushWord(); newline() } else if (character === ' ' || character === '\t') {
           pushWord()
           if (column > 0) pendingSpace = true
@@ -311,10 +345,34 @@ export function createSpinner(label) {
 }
 
 /** Multi-line approval card; the caller appends its own readline question. */
-export function approvalCard(name, input) {
-  const detail = toolDescription(name, input)
-  return `\n${INDENT}${ui.yellow(glyph.tl + glyph.h.repeat(3))} ${ui.yellow(ui.bold('approval required'))}\n`
-    + `${INDENT}${ui.yellow(glyph.v)}  ${ui.bold(name)}${detail ? `  ${ui.muted(detail)}` : ''}\n`
+export function approvalCard(name, input = {}) {
+  const lines = []
+  // JSON quoting preserves whitespace and makes every control byte visible;
+  // sanitizing afterwards also neutralizes C1 and bidi controls JSON permits.
+  const quote = (value) => sanitizeTerminalText(JSON.stringify(String(value ?? '')))
+  if (name === 'run_command') {
+    lines.push(['command', quote(input.command || '')])
+    lines.push(['cwd', quote(input.cwd || '.')])
+    const requestedTimeout = Number(input.timeoutMs) || 30000
+    const effectiveTimeout = Math.max(1000, Math.min(requestedTimeout, 120000))
+    lines.push(['timeout', String(effectiveTimeout) + ' ms'])
+  } else if (name === 'write_file' || name === 'append_file') {
+    const content = typeof input.content === 'string' ? input.content : ''
+    lines.push(['path', quote(input.path || '')])
+    lines.push(['bytes', String(Buffer.byteLength(content))])
+    lines.push(['content', quote(content)])
+  } else if (name === 'delete_file') {
+    lines.push(['path', quote(input.path || '')])
+  } else {
+    lines.push(['input', sanitizeTerminalText(JSON.stringify(input ?? {}))])
+  }
+
+  let card = `\n${INDENT}${ui.yellow(glyph.tl + glyph.h.repeat(3))} ${ui.yellow(ui.bold('approval required'))}\n`
+    + `${INDENT}${ui.yellow(glyph.v)}  ${ui.bold(sanitizeTerminalText(name))}\n`
+  for (const [label, value] of lines) {
+    card += `${INDENT}${ui.yellow(glyph.v)}  ${ui.muted(label)}  ${value}\n`
+  }
+  return card
 }
 
 export function approvalQuestion() {
@@ -367,6 +425,10 @@ export async function selectFromList({ terminal, title, items, currentId, hint }
     function cleanup() {
       stdin.removeListener('keypress', onKey)
       if (stdin.setRawMode) stdin.setRawMode(wasRaw)
+      // Wipe the rendered list the same way render() does before a redraw, so
+      // picking a model drops straight back to the prompt instead of leaving
+      // the whole picker sitting in scrollback.
+      if (lastLineCount > 0) stdout.write(`[${lastLineCount}A\r[J`)
       stdout.write('[?25h')
       terminal?.resume?.()
     }
@@ -401,6 +463,26 @@ export async function selectFromList({ terminal, title, items, currentId, hint }
     stdin.on('keypress', onKey)
     render(true)
   })
+}
+
+/**
+ * One-line "N/M loaded" summary with a dot per model, shown above the prompt
+ * and redrawn every few seconds by the models poller. Clipped to the
+ * terminal width so it can never wrap and throw off the reader's line count.
+ */
+export function modelsStatusLine(allModels = []) {
+  if (!allModels.length) return null
+  const loadedCount = allModels.filter((m) => m.state === 'loaded').length
+  const prefix = `${INDENT}${ui.muted('models')} ${ui.bold(`${loadedCount}/${allModels.length}`)} ${ui.muted('loaded')}  `
+  const width = terminalWidth()
+  let line = prefix
+  for (const item of allModels) {
+    const dot = item.state === 'loaded' ? ui.green(glyph.dot) : ui.muted(glyph.ring)
+    const candidate = `${line}${dot} `
+    if (displayWidth(candidate) + 1 > width) { line += ui.muted('…'); break }
+    line = candidate
+  }
+  return line
 }
 
 /** Two-column command list used by /help. */

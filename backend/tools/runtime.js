@@ -5,6 +5,7 @@ import { createProjectPath, relativeProjectPath } from '../lib/project-path.js'
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+const MAX_LIST_ENTRIES = 1000
 const IGNORED_NAMES = new Set(['.git', 'node_modules', 'dist', '.local-coding-agent', '.DS_Store'])
 
 const dangerousCommands = [
@@ -32,6 +33,21 @@ function runProcess(file, args, options) {
       })
     })
   })
+}
+
+export async function readBoundedDirectory(directory, limit, openDirectory = (target) => fs.opendir(target)) {
+  const children = []
+  let truncated = false
+  const handle = await openDirectory(directory)
+  for await (const child of handle) {
+    if (IGNORED_NAMES.has(child.name)) continue
+    if (children.length >= limit) {
+      truncated = true
+      break
+    }
+    children.push(child)
+  }
+  return { children, truncated }
 }
 
 export async function createToolRuntime(projectRoot, extraRoots = []) {
@@ -70,22 +86,33 @@ export async function createToolRuntime(projectRoot, extraRoots = []) {
     const stats = await fs.stat(target)
     if (!stats.isDirectory()) throw new Error('Path is not a directory.')
     const entries = []
+    let truncated = false
 
     async function walk(directory, depth) {
-      const children = await fs.readdir(directory, { withFileTypes: true })
+      const remaining = MAX_LIST_ENTRIES - entries.length
+      if (remaining <= 0) {
+        truncated = true
+        return
+      }
+      const result = await readBoundedDirectory(directory, remaining)
+      const children = result.children
+      if (result.truncated) truncated = true
       children.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
       for (const child of children) {
-        if (IGNORED_NAMES.has(child.name)) continue
         const absolute = path.join(directory, child.name)
         const item = { name: child.name, path: relativeProjectPath(root, absolute), type: child.isDirectory() ? 'directory' : child.isFile() ? 'file' : 'other' }
         entries.push(item)
-        if (entries.length >= 1000) return
+        if (entries.length >= MAX_LIST_ENTRIES) {
+          truncated = true
+          return
+        }
         if (recursive && child.isDirectory() && depth < 4) await walk(absolute, depth + 1)
+        if (entries.length >= MAX_LIST_ENTRIES) return
       }
     }
 
     await walk(target, 0)
-    return { path: relativeProjectPath(root, target), entries, truncated: entries.length >= 1000 }
+    return { path: relativeProjectPath(root, target), entries, truncated }
   }
 
   async function deleteFile(relativePath) {

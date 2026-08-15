@@ -75,3 +75,117 @@ test('agent executes tool calls and continues to a final answer', async (context
     assert.ok(events.some((event) => event.type === 'text' && event.content === 'Created hello.txt.'))
   } finally { globalThis.fetch = originalFetch }
 })
+
+test('agent rejects a response whose declared size exceeds the local limit', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{ message: { role: 'assistant', content: 'small body' }, finish_reason: 'stop' }],
+  }), {
+    headers: {
+      'content-type': 'application/json',
+      'content-length': String(9 * 1024 * 1024),
+    },
+  })
+  try {
+    await assert.rejects(
+      runCodingAgent({
+        baseUrl: 'http://test/v1',
+        messages: [{ role: 'user', content: 'Hi' }],
+        settings,
+        runtime: { execute: async () => ({}) },
+        onEvent: () => {},
+      }),
+      /response exceeds the 8 MB limit/i,
+    )
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('agent rejects an oversized response even without Content-Length', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(8 * 1024 * 1024))
+      controller.enqueue(new Uint8Array(1))
+      controller.close()
+    },
+  }), { headers: { 'content-type': 'application/json' } })
+  try {
+    await assert.rejects(
+      runCodingAgent({
+        baseUrl: 'http://test/v1',
+        messages: [{ role: 'user', content: 'Hi' }],
+        settings,
+        runtime: { execute: async () => ({}) },
+        onEvent: () => {},
+      }),
+      /response exceeds the 8 MB limit/i,
+    )
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('agent rejects oversized SSE lines', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response('data: ' + 'x'.repeat(1024 * 1024) + '\n', {
+    headers: { 'content-type': 'text/event-stream' },
+  })
+  try {
+    await assert.rejects(
+      runCodingAgent({
+        baseUrl: 'http://test/v1',
+        messages: [{ role: 'user', content: 'Hi' }],
+        settings,
+        runtime: { execute: async () => ({}) },
+        onEvent: () => {},
+      }),
+      /SSE line exceeds the 1 MB limit/i,
+    )
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('agent rejects too many tool calls and oversized tool arguments', async () => {
+  const originalFetch = globalThis.fetch
+  const toolCall = (index, argumentsValue = '{}') => ({
+    id: 'call_' + index,
+    type: 'function',
+    function: { name: 'read_file', arguments: argumentsValue },
+  })
+  const responses = [
+    { choices: [{ message: { role: 'assistant', content: null, tool_calls: Array.from({ length: 33 }, (_, index) => toolCall(index)) }, finish_reason: 'tool_calls' }] },
+    { choices: [{ message: { role: 'assistant', content: null, tool_calls: [toolCall(0, 'x'.repeat(2 * 1024 * 1024 + 1))] }, finish_reason: 'tool_calls' }] },
+  ]
+  globalThis.fetch = async () => new Response(JSON.stringify(responses.shift()), {
+    headers: { 'content-type': 'application/json' },
+  })
+  const request = () => runCodingAgent({
+    baseUrl: 'http://test/v1',
+    messages: [{ role: 'user', content: 'Hi' }],
+    settings,
+    runtime: { execute: async () => ({}) },
+    onEvent: () => {},
+  })
+  try {
+    await assert.rejects(request(), /too many tool calls/i)
+    await assert.rejects(request(), /tool arguments exceed the local limit/i)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('agent rejects sparse or excessive streamed tool-call indexes', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":1000,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}',
+    'data: [DONE]',
+    '',
+  ].join('\n'), { headers: { 'content-type': 'text/event-stream' } })
+  try {
+    await assert.rejects(
+      runCodingAgent({
+        baseUrl: 'http://test/v1',
+        messages: [{ role: 'user', content: 'Hi' }],
+        settings,
+        runtime: { execute: async () => ({}) },
+        onEvent: () => {},
+      }),
+      /tool-call index/i,
+    )
+  } finally { globalThis.fetch = originalFetch }
+})

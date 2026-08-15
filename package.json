@@ -1,18 +1,47 @@
 {
-  "name": "local-coding-agent",
+  "name": "rivet",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
-  "description": "A local-first coding agent for LM Studio",
+  "description": "Rivet, a local-first terminal coding agent for LM Studio",
+  "license": "MIT",
+  "author": "carboy285",
+  "homepage": "https://github.com/carboy285/rivet#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carboy285/rivet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/carboy285/rivet/issues"
+  },
+  "keywords": [
+    "coding-agent",
+    "cli",
+    "lm-studio",
+    "local-first",
+    "terminal",
+    "ai"
+  ],
   "packageManager": "pnpm@11.19.0",
   "bin": {
+    "rivet": "cli/index.js",
     "coding-agent": "cli/index.js"
   },
+  "files": [
+    "cli/**/*.js",
+    "backend/lib/**/*.js",
+    "backend/services/**/*.js",
+    "backend/tools/**/*.js",
+    "agent",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "agent": "node cli/index.js",
     "start": "node cli/index.js",
     "dev": "node cli/index.js",
     "test": "node --test backend/test/*.test.js cli/test/*.test.js"
   },
-  "engines": { "node": ">=20.0.0" }
+  "engines": { "node": ">=20.0.0" },
+  "preferGlobal": true
 }

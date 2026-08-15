@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseArgs, normalizeBaseUrl } from '../args.js'
+import { HELP, parseArgs, normalizeBaseUrl } from '../args.js'
+
+test('CLI help uses the Rivet brand and command', () => {
+  assert.match(HELP, /^Rivet 1\.0\.0/m)
+  assert.match(HELP, /^  rivet \[project\] \[options\]$/m)
+})
 
 test('CLI parses a project, model settings, prompt, and approval mode', () => {
   const result = parseArgs(['/tmp/project', '--model', 'qwen', '--temperature=0.4', '--max-tokens', '2048', '-p', 'Fix tests', '--yes'])
@@ -14,12 +19,23 @@ test('CLI parses a project, model settings, prompt, and approval mode', () => {
 
 test('server URLs get the /v1 path LM Studio actually serves', () => {
   assert.equal(normalizeBaseUrl('http://127.0.0.1:1234'), 'http://127.0.0.1:1234/v1')
-  assert.equal(normalizeBaseUrl('http://10.0.0.5:1234/'), 'http://10.0.0.5:1234/v1')
-  assert.equal(normalizeBaseUrl('10.0.0.5:1234'), 'http://10.0.0.5:1234/v1')
-  assert.equal(normalizeBaseUrl('http://10.0.0.5:1234/v1'), 'http://10.0.0.5:1234/v1')
-  assert.equal(normalizeBaseUrl('http://proxy.local/openai/v1'), 'http://proxy.local/openai/v1')
+  assert.equal(normalizeBaseUrl('https://10.0.0.5:1234/'), 'https://10.0.0.5:1234/v1')
+  assert.equal(normalizeBaseUrl('https://proxy.example/openai/v1'), 'https://proxy.example/openai/v1')
+  assert.throws(() => normalizeBaseUrl('10.0.0.5:1234'), /HTTPS/)
+  assert.equal(
+    normalizeBaseUrl('10.0.0.5:1234', { allowInsecureRemote: true }),
+    'http://10.0.0.5:1234/v1',
+  )
   assert.equal(parseArgs(['--url', 'http://127.0.0.1:1234']).url, 'http://127.0.0.1:1234/v1')
+  assert.throws(() => parseArgs(['--url', 'http://10.0.0.5:1234']), /allow-insecure-http/)
+  assert.equal(
+    parseArgs(['--url', 'http://10.0.0.5:1234', '--allow-insecure-http']).url,
+    'http://10.0.0.5:1234/v1',
+  )
   assert.throws(() => normalizeBaseUrl('http://'), /Invalid server URL/)
+  assert.throws(() => normalizeBaseUrl('ftp://example.com'), /HTTP or HTTPS/)
+  assert.throws(() => normalizeBaseUrl('http://localhost.evil:1234'), /HTTPS/)
+  assert.throws(() => normalizeBaseUrl('http://user:secret@localhost:1234'), /credentials/)
 })
 
 test('CLI rejects unsafe or malformed option values', () => {

@@ -1,47 +1,53 @@
-# Local Coding Agent CLI
+# Rivet
 
-A terminal-first coding agent powered by a model running in LM Studio. It works directly inside a project folder and can inspect code, create or edit files, delete files, and run commands and tests. No browser or local web server is required.
+Rivet is a terminal-first coding agent powered by a model running in LM Studio. It works directly inside a project folder and can inspect code, create or edit files, delete files, and run commands and tests. No browser or local web server is required.
 
-## Start the agent
+## Install
 
-Prerequisites:
+Rivet has **no third-party runtime dependencies** — it runs on Node.js 20+ alone. Pick either one-line install.
+
+**With npm (recommended):**
+
+```bash
+npm install -g github:carboy285/rivet
+```
+
+**With curl (no npm needed):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/carboy285/rivet/main/install.sh | bash
+```
+
+Either way, once it finishes you have a `rivet` command. From any project folder:
+
+```bash
+cd /path/to/your/project
+rivet
+```
+
+To update later, run the same install command again. To uninstall: `npm uninstall -g rivet` (npm) or `rm -rf ~/.rivet && rm -f "$(command -v rivet)"` (curl).
+
+### Requirements
 
 - Node.js 20 or newer
-- pnpm (`corepack enable` usually installs it)
 - LM Studio with a model loaded and its OpenAI-compatible local server enabled
 - LM Link forwarding that server to `http://localhost:1234`, if LM Studio runs on another machine
 
-The CLI has no third-party runtime dependencies. On this Mac, use the included launcher; it automatically finds the bundled Node runtime:
+## Run from a clone (development)
+
+If you cloned the repo instead of installing, use the bundled launcher — it finds Node automatically:
 
 ```bash
 ./agent /absolute/path/to/your/project
 ```
 
-If Node and pnpm are installed normally, you can also use the package script:
-
-```bash
-pnpm agent -- /absolute/path/to/your/project
-```
-
-Relative paths also work:
+Or the package script (relative paths work too):
 
 ```bash
 pnpm agent -- ../my-project
 ```
 
-If no path is supplied, the agent opens the terminal's current directory:
-
-```bash
-cd /path/to/your/project
-/path/to/local-coding-agent/cli/index.js
-```
-
-You can also make `coding-agent` available as a command with `pnpm link --global`, then run it from any project:
-
-```bash
-cd /path/to/your/project
-coding-agent
-```
+If no path is supplied, Rivet opens the terminal's current directory. You can also expose the `rivet` command from a clone with `pnpm link --global`.
 
 ## Use it
 
@@ -105,6 +111,7 @@ Use `--yes` only in a project you trust.
 -t, --temperature <0-1>  Set sampling temperature
     --max-tokens <number> Set maximum response tokens
     --url <url>           Set the LM Studio API base URL
+    --allow-insecure-http Allow cleartext HTTP to a non-loopback server
 -y, --yes                 Approve changes and commands for this session
     --verbose-tools       Print complete tool results
 ```
@@ -119,7 +126,11 @@ The CLI uses `http://localhost:1234/v1` by default. Override it with `--url` or 
 LM_STUDIO_URL=http://localhost:1234/v1 pnpm agent -- ./my-project
 ```
 
-You can place variables in `.env` at the coding-agent root. See [.env.example](.env.example).
+Rivet requires HTTPS for non-loopback servers. If a trusted private network cannot provide HTTPS, `--allow-insecure-http` enables that exception explicitly; `/server` asks for confirmation before accepting it and `/status` labels it as insecure.
+
+Per-project preferences are stored outside the project in a private, user-owned Rivet configuration directory keyed by the project path. Legacy `.local-coding-agent/settings.json` files inside projects are intentionally ignored, so a repository cannot silently replace the model endpoint or system prompt. On macOS, the settings files live under `~/Library/Application Support/Rivet/projects/`.
+
+You can place variables in `.env` at the Rivet root. See [.env.example](.env.example).
 
 ## Tools and safety
 
@@ -134,7 +145,9 @@ The model receives six tools:
 
 All model-supplied paths are restricted to the active project. Existing paths and parent directories are resolved to prevent `..` traversal and symbolic-link escapes. Reads and writes are capped at 2 MB. Commands have a default 30-second timeout, capped output, a filtered environment, and guards against several destructive system commands.
 
-Shell access is inherently powerful, which is why mutating tools require terminal approval by default.
+Shell access is inherently powerful, which is why mutating tools require terminal approval by default. Approval cards show the complete command, working directory, effective timeout, and exact file content before consent; remote and repository-controlled terminal text is rendered inertly.
+
+LM responses, tool arguments, model lists, directory listings, and command output have local size or count limits to keep a malformed endpoint or project from consuming unbounded resources.
 
 ## Test
 

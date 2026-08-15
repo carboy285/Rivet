@@ -1,9 +1,9 @@
 export const VERSION = '1.0.0'
 
-export const HELP = `Local Coding Agent ${VERSION}
+export const HELP = `Rivet ${VERSION}
 
 Usage:
-  coding-agent [project] [options]
+  rivet [project] [options]
   pnpm agent -- [project] [options]
 
 Options:
@@ -12,6 +12,7 @@ Options:
   -t, --temperature <0-1>  Sampling temperature (default: 0.2)
       --max-tokens <number> Maximum response tokens (default: 4096)
       --url <url>           LM Studio API URL (default: http://localhost:1234/v1)
+      --allow-insecure-http Allow cleartext HTTP to a non-loopback server
   -y, --yes                 Approve file changes and commands for this session
       --verbose-tools       Show complete tool results
   -h, --help                Show this help
@@ -30,14 +31,44 @@ In the shell: ctrl+c cancels a response, ctrl+l redraws a clean screen, and
  * bare host and port. Accept either form so `http://host:1234` does not turn
  * into a request for /models that the server has no route for.
  */
-export function normalizeBaseUrl(value) {
+export function isLoopbackUrl(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase()
+    return hostname === 'localhost'
+      || hostname === '::1'
+      || hostname === '[::1]'
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname)
+  } catch {
+    return false
+  }
+}
+
+export function isInsecureRemoteUrl(value) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' && !isLoopbackUrl(url.href)
+  } catch {
+    return false
+  }
+}
+
+export function normalizeBaseUrl(value, { allowInsecureRemote = false } = {}) {
   const trimmed = String(value).trim()
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) && !/^https?:\/\//i.test(trimmed)) {
+    throw new Error('Server URL must use HTTP or HTTPS.')
+  }
   const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed.replace(/^\/+/, '')}`
   let url
   try { url = new URL(withScheme) } catch { throw new Error(`Invalid server URL: ${value}`) }
   if (!url.hostname) throw new Error(`Invalid server URL: ${value}`)
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Server URL must use HTTP or HTTPS.')
+  if (url.username || url.password) throw new Error('Server URL must not include credentials.')
   const pathname = url.pathname.replace(/\/+$/, '')
-  return `${url.origin}${pathname || '/v1'}`
+  const normalized = `${url.origin}${pathname || '/v1'}`
+  if (isInsecureRemoteUrl(normalized) && !allowInsecureRemote) {
+    throw new Error('Remote LM Studio servers must use HTTPS. Pass --allow-insecure-http only for a trusted network.')
+  }
+  return normalized
 }
 
 function nextValue(argv, index, option) {
@@ -50,7 +81,7 @@ export function parseArgs(argv) {
   const options = {
     project: '', prompt: '', model: 'auto', temperature: 0.2, maxTokens: 4096,
     url: process.env.LM_STUDIO_URL || 'http://localhost:1234/v1',
-    yes: false, verboseTools: false, help: false, version: false,
+    yes: false, verboseTools: false, allowInsecureHttp: false, help: false, version: false,
     // Flags the user actually typed, so saved preferences know which fields they may fill in.
     explicit: new Set(),
   }
@@ -62,6 +93,7 @@ export function parseArgs(argv) {
     else if (argument === '-v' || argument === '--version') options.version = true
     else if (argument === '-y' || argument === '--yes') options.yes = true
     else if (argument === '--verbose-tools') { options.verboseTools = true; options.explicit.add('verboseTools') }
+    else if (argument === '--allow-insecure-http') options.allowInsecureHttp = true
     else if (argument === '-p' || argument === '--prompt') { options.prompt = nextValue(argv, index, argument); index += 1 }
     else if (argument.startsWith('--prompt=')) options.prompt = argument.slice(9)
     else if (argument === '-m' || argument === '--model') { options.model = nextValue(argv, index, argument); options.explicit.add('model'); index += 1 }
@@ -79,6 +111,6 @@ export function parseArgs(argv) {
 
   if (!Number.isFinite(options.temperature) || options.temperature < 0 || options.temperature > 1) throw new Error('Temperature must be between 0 and 1.')
   if (!Number.isInteger(options.maxTokens) || options.maxTokens < 128 || options.maxTokens > 32768) throw new Error('Max tokens must be an integer between 128 and 32768.')
-  options.url = normalizeBaseUrl(options.url)
+  options.url = normalizeBaseUrl(options.url, { allowInsecureRemote: options.allowInsecureHttp })
   return options
 }
