@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { stdin, stdout } from 'node:process'
-import { parseArgs, HELP, VERSION } from './args.js'
+import { parseArgs, normalizeBaseUrl, HELP, VERSION } from './args.js'
 import { createApprovedRuntime } from './approval.js'
 import {
   agentLabel,
@@ -57,10 +57,19 @@ async function loadLocalEnvironment() {
   }
 }
 
+function isLoopback(baseUrl) {
+  try { return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(new URL(baseUrl).hostname) } catch { return false }
+}
+
 function friendlyError(error, baseUrl) {
   if (error.name === 'AbortError') return 'Request cancelled.'
-  if (error.message === 'fetch failed' || /ECONNREFUSED|UND_ERR_CONNECT/.test(String(error.cause))) {
-    return `Cannot reach LM Studio at ${baseUrl}. Start its local server and load a model.`
+  if (error.name === 'TimeoutError' || /ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/.test(String(error.cause))) {
+    return `${baseUrl} did not answer in time. The host is probably on another network, or a firewall is dropping port ${new URL(baseUrl).port || 80}.`
+  }
+  if (error.message === 'fetch failed' || /ECONNREFUSED|UND_ERR_CONNECT|EHOSTUNREACH|ENOTFOUND/.test(String(error.cause))) {
+    return isLoopback(baseUrl)
+      ? `Nothing is listening at ${baseUrl} on this machine. Start the server in LM Studio's Developer tab, or point /server at the machine running it.`
+      : `Nothing answered at ${baseUrl}. Check that LM Studio is running there with "Serve on Local Network" enabled, and that the host firewall allows the port.`
   }
   return error.message || String(error)
 }
@@ -252,7 +261,8 @@ async function main() {
       summary: 'Change the LM Studio server URL',
       async handler(argument) {
         if (!argument) { stdout.write(usageLine('/server <url>')); return }
-        const nextUrl = argument.trim().replace(/\/$/, '')
+        let nextUrl
+        try { nextUrl = normalizeBaseUrl(argument) } catch (error) { stdout.write(errorLine(error.message)); return }
         options.url = nextUrl
         try {
           models = await getModels(nextUrl, AbortSignal.timeout(5000))

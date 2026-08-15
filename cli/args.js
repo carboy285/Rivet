@@ -25,6 +25,21 @@ In the shell: ctrl+c cancels a response, ctrl+l redraws a clean screen, and
 /clear wipes the screen and starts a fresh conversation.
 `
 
+/**
+ * LM Studio serves its OpenAI-compatible API under /v1, but its UI shows the
+ * bare host and port. Accept either form so `http://host:1234` does not turn
+ * into a request for /models that the server has no route for.
+ */
+export function normalizeBaseUrl(value) {
+  const trimmed = String(value).trim()
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed.replace(/^\/+/, '')}`
+  let url
+  try { url = new URL(withScheme) } catch { throw new Error(`Invalid server URL: ${value}`) }
+  if (!url.hostname) throw new Error(`Invalid server URL: ${value}`)
+  const pathname = url.pathname.replace(/\/+$/, '')
+  return `${url.origin}${pathname || '/v1'}`
+}
+
 function nextValue(argv, index, option) {
   const value = argv[index + 1]
   if (!value || value.startsWith('-')) throw new Error(`${option} requires a value.`)
@@ -62,6 +77,6 @@ export function parseArgs(argv) {
 
   if (!Number.isFinite(options.temperature) || options.temperature < 0 || options.temperature > 1) throw new Error('Temperature must be between 0 and 1.')
   if (!Number.isInteger(options.maxTokens) || options.maxTokens < 128 || options.maxTokens > 32768) throw new Error('Max tokens must be an integer between 128 and 32768.')
-  options.url = options.url.replace(/\/$/, '')
+  options.url = normalizeBaseUrl(options.url)
   return options
 }
