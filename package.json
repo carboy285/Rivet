@@ -1,0 +1,18 @@
+{
+  "name": "local-coding-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A local-first coding agent for LM Studio",
+  "packageManager": "pnpm@11.19.0",
+  "bin": {
+    "coding-agent": "cli/index.js"
+  },
+  "scripts": {
+    "agent": "node cli/index.js",
+    "start": "node cli/index.js",
+    "dev": "node cli/index.js",
+    "test": "node --test backend/test/*.test.js cli/test/*.test.js"
+  },
+  "engines": { "node": ">=20.0.0" }
+}

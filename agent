@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+AGENT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if command -v node >/dev/null 2>&1; then
+  AGENT_NODE=$(command -v node)
+elif [ -x "/Users/ben/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node" ]; then
+  AGENT_NODE="/Users/ben/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+else
+  printf '%s\n' "Local Coding Agent needs Node.js 20 or newer." >&2
+  printf '%s\n' "Install Node.js from https://nodejs.org and run this command again." >&2
+  exit 1
+fi
+
+exec "$AGENT_NODE" "$AGENT_DIR/cli/index.js" "$@"

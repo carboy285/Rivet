@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+.local-coding-agent/
+.env
+backend/.env
+!.env.example
+!backend/.env.example
+.DS_Store
+*.log
+.pnpm-debug.log*
