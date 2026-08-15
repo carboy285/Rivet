@@ -76,10 +76,10 @@ Terminal commands:
 | `/diff [path]` | Show `git diff` for the project (or a path within it) |
 | `/doctor` | Run local health checks (Node, server, project, git) |
 | `/usage` | Show an approximate context-size estimate |
-| `/clear` (alias `/new`) | Clear conversation context |
+| `/clear` (alias `/new`) | Wipe the screen (and scrollback) and start a fresh conversation |
 | `/exit` (alias `/quit`) | Quit |
 
-Press `Ctrl+C` while the model is responding to cancel the request. Press it at the input prompt to exit.
+Press `Ctrl+C` while the model is responding to cancel the request. Press it at the input prompt to exit. Press `Ctrl+L` to redraw a clean screen without touching the conversation.
 
 ## One-shot tasks
 
