@@ -177,7 +177,9 @@ async function main() {
   const prompt = createPromptSession({
     getCommands: () => commands,
     getStatusLine: () => modelsStatusLine(allModels),
+    getFooter: () => `${INDENT}${ui.bold(approvalModeLabel(approvals.mode))}  ${ui.muted('shift+tab to cycle')}`,
     onClearScreen: () => renderBanner(),
+    onCycleMode: cycleMode,
   })
 
   async function confirmTool(name, input) {
@@ -207,6 +209,13 @@ async function main() {
     approvals = createApprovedRuntime(currentRuntime, { confirm: confirmTool, mode })
   }
   resetApprovals()
+
+  function cycleMode() {
+    const index = APPROVAL_MODES.indexOf(approvals.mode)
+    const next = APPROVAL_MODES[(index + 1) % APPROVAL_MODES.length]
+    approvals.setMode(next)
+    persistedApprovalMode = next
+  }
 
   let models = []
   let allModels = []

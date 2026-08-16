@@ -44,7 +44,7 @@ function filterCommands(buffer, commands) {
  * an empty buffer so the caller can shut down cleanly. Ctrl+C with content
  * clears the buffer, matching common shell behavior.
  */
-export function createPromptSession({ getCommands = () => [], getStatusLine, onClearScreen } = {}) {
+export function createPromptSession({ getCommands = () => [], getStatusLine, getFooter, onClearScreen, onCycleMode } = {}) {
   const history = []
   // Set only while the main ask() loop is waiting at the prompt — lets a
   // background timer (e.g. the models-list poller) redraw just the status
@@ -57,7 +57,8 @@ export function createPromptSession({ getCommands = () => [], getStatusLine, onC
   return {
     ask(promptString) {
       return readLine({
-        promptString, commands: getCommands(), history, onClearScreen, getStatusLine, allowPicker: true, addHistory: true,
+        promptString, commands: getCommands(), history, onClearScreen, getStatusLine, getFooter, allowPicker: true, addHistory: true,
+        onCycleMode,
         registerRefresh: (fn) => { activeRefresh = fn },
       })
     },
@@ -68,7 +69,7 @@ export function createPromptSession({ getCommands = () => [], getStatusLine, onC
   }
 }
 
-function readLine({ promptString, commands, history, onClearScreen, getStatusLine, allowPicker, addHistory, registerRefresh }) {
+function readLine({ promptString, commands, history, onClearScreen, getStatusLine, getFooter, allowPicker, addHistory, registerRefresh, onCycleMode }) {
   return new Promise((resolve) => {
     let buffer = ''
     let cursor = 0
@@ -79,6 +80,7 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
     // walks back over this many rows before each redraw so the picker never
     // leaves debris behind.
     let linesAbove = 0
+    let hadFooter = false
 
     const wasRaw = Boolean(stdin.isRaw)
     if (stdin.setRawMode) stdin.setRawMode(true)
@@ -90,6 +92,7 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
 
     function eraseDrawn() {
       if (linesAbove > 0) stdout.write(`\r[${linesAbove}A[J`)
+      else if (hadFooter) stdout.write(`\r[J`)
       else stdout.write(`\r[2K`)
     }
 
@@ -137,10 +140,20 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
       if (rowsAbove.length) stdout.write(`${rowsAbove.join('\n')}\n`)
 
       stdout.write(`${promptString}${buffer}`)
-      const trailing = buffer.length - cursor
-      if (trailing > 0) stdout.write(`[${trailing}D`)
+
+      const footer = allowPicker ? getFooter?.() : null
+      if (footer) {
+        stdout.write(`\n${footer}`)
+        stdout.write(`[1A\r`)
+        const targetColumn = displayWidth(promptString) + cursor
+        if (targetColumn > 0) stdout.write(`[${targetColumn}C`)
+      } else {
+        const trailing = buffer.length - cursor
+        if (trailing > 0) stdout.write(`[${trailing}D`)
+      }
 
       linesAbove = rowsAbove.length
+      hadFooter = Boolean(footer)
     }
 
     function refreshFromOutside() {
@@ -203,6 +216,11 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
           value = list[focused].name
         }
         finish(value)
+        return
+      }
+      if (key.name === 'tab' && key.shift) {
+        onCycleMode?.()
+        draw(false)
         return
       }
       if (key.name === 'tab') {

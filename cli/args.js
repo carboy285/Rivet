@@ -1,4 +1,4 @@
-export const VERSION = '1.0.2'
+export const VERSION = '1.0.3'
 
 export const HELP = `Rivet ${VERSION}
 
@@ -22,8 +22,9 @@ Run the agent and type /help to see interactive commands (/project, /server,
 /models, /model, /mode, /config, /status, /compact, /export, /resume, /diff,
 /doctor, /usage, /add-dir, /clear, /exit, and more).
 
-In the shell: ctrl+c cancels a response, ctrl+l redraws a clean screen, and
-/clear wipes the screen and starts a fresh conversation.
+In the shell: ctrl+c cancels a response, ctrl+l redraws a clean screen,
+shift+tab cycles the permission mode, and /clear wipes the screen and
+starts a fresh conversation.
 `
 
 /**
