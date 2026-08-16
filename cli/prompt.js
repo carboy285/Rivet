@@ -44,7 +44,7 @@ function filterCommands(buffer, commands) {
  * an empty buffer so the caller can shut down cleanly. Ctrl+C with content
  * clears the buffer, matching common shell behavior.
  */
-export function createPromptSession({ getCommands = () => [], getStatusLine, getFooter, onClearScreen, onCycleMode } = {}) {
+export function createPromptSession({ getCommands = () => [], getStatusLine, getFooter, getBanner, onClearScreen, onCycleMode } = {}) {
   const history = []
   // Set only while the main ask() loop is waiting at the prompt — lets a
   // background timer (e.g. the models-list poller) redraw just the status
@@ -55,10 +55,11 @@ export function createPromptSession({ getCommands = () => [], getStatusLine, get
   // so scrollback (the chat so far) is never touched.
   let activeRefresh = null
   return {
-    ask(promptString) {
+    ask(promptString, { showBanner = false } = {}) {
       return readLine({
         promptString, commands: getCommands(), history, onClearScreen, getStatusLine, getFooter, allowPicker: true, addHistory: true,
         onCycleMode,
+        getBanner: showBanner ? getBanner : null,
         registerRefresh: (fn) => { activeRefresh = fn },
       })
     },
@@ -69,7 +70,7 @@ export function createPromptSession({ getCommands = () => [], getStatusLine, get
   }
 }
 
-function readLine({ promptString, commands, history, onClearScreen, getStatusLine, getFooter, allowPicker, addHistory, registerRefresh, onCycleMode }) {
+function readLine({ promptString, commands, history, onClearScreen, getStatusLine, getFooter, getBanner, allowPicker, addHistory, registerRefresh, onCycleMode }) {
   return new Promise((resolve) => {
     let buffer = ''
     let cursor = 0
@@ -81,6 +82,13 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
     // leaves debris behind.
     let linesAbove = 0
     let hadFooter = false
+    // Rows the banner block (getBanner) occupied on the last redraw. Only
+    // non-zero when this ask() was told to show the banner (the very first
+    // prompt of a session). Kept separate from linesAbove because a plain
+    // keystroke redraw must leave the banner untouched — only the periodic
+    // live-refresh redraw (drawBanner()) erases and rewrites it, so the
+    // models list can update in place every few seconds without flicker.
+    let bannerRows = 0
 
     const wasRaw = Boolean(stdin.isRaw)
     if (stdin.setRawMode) stdin.setRawMode(true)
@@ -90,8 +98,9 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
       return allowPicker ? filterCommands(buffer, commands) : []
     }
 
-    function eraseDrawn() {
-      if (linesAbove > 0) stdout.write(`\r[${linesAbove}A[J`)
+    function eraseDrawn(includeBanner = false) {
+      const upCount = linesAbove + (includeBanner ? bannerRows : 0)
+      if (upCount > 0) stdout.write(`\r[${upCount}A[J`)
       else if (hadFooter) stdout.write(`\r[J`)
       else stdout.write(`\r[2K`)
     }
@@ -128,13 +137,21 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
       const list = matches()
       if (list.length) return renderPickerRows(list)
       // No picker showing — leave room for a one-line live status (the
-      // models-list poller) instead, if the caller supplied one.
-      const status = allowPicker ? getStatusLine?.() : null
+      // models-list poller) instead, if the caller supplied one. Skipped
+      // when this ask() already shows the full banner (with its own
+      // MODELS list) so the count isn't duplicated on screen.
+      const status = allowPicker && !getBanner ? getStatusLine?.() : null
       return status ? [status] : []
     }
 
-    function draw(first) {
-      if (!first) eraseDrawn()
+    function draw(first, redrawBanner = first) {
+      if (!first) eraseDrawn(redrawBanner)
+
+      if (redrawBanner && getBanner) {
+        const bannerText = getBanner()
+        stdout.write(bannerText)
+        bannerRows = (bannerText.match(/\n/g) || []).length
+      }
 
       const rowsAbove = aboveRows()
       if (rowsAbove.length) stdout.write(`${rowsAbove.join('\n')}\n`)
@@ -158,8 +175,12 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
 
     function refreshFromOutside() {
       clearScreen()
-      onClearScreen?.()
       linesAbove = 0
+      bannerRows = 0
+      // When this ask() owns the live banner, redraw it locally (draw()
+      // handles it) rather than through onClearScreen, or Ctrl+L would
+      // print the banner twice.
+      if (!getBanner) onClearScreen?.()
       draw(true)
     }
 
@@ -339,7 +360,10 @@ function readLine({ promptString, commands, history, onClearScreen, getStatusLin
     }
 
     stdin.on('keypress', onKey)
-    registerRefresh?.(() => draw(false))
+    // Background poller refresh: also redraws the banner in place (models
+    // list, connection state) when this ask() owns it, otherwise behaves
+    // exactly like a normal non-banner redraw.
+    registerRefresh?.(() => draw(false, Boolean(getBanner)))
     draw(true)
   })
 }

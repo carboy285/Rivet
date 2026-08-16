@@ -178,6 +178,7 @@ async function main() {
     getCommands: () => commands,
     getStatusLine: () => modelsStatusLine(allModels),
     getFooter: () => `${INDENT}${ui.bold(approvalModeLabel(approvals.mode))}  ${ui.muted('shift+tab to cycle')}`,
+    getBanner: () => bannerText(),
     onClearScreen: () => renderBanner(),
     onCycleMode: cycleMode,
   })
@@ -235,8 +236,8 @@ async function main() {
     }
   }
 
-  function renderBanner() {
-    stdout.write(banner({
+  function bannerText() {
+    let text = banner({
       project: workspace.info().path,
       url: options.url,
       model: activeModel(),
@@ -244,7 +245,16 @@ async function main() {
       version: VERSION,
       mode: approvals.mode,
       allModels,
-    }))
+    })
+    // Folded into the banner block (rather than written separately) so it
+    // still shows up correctly whether the banner is printed once (one-shot
+    // mode) or redrawn in place every few seconds (interactive mode).
+    if (savedUrlWarning) text += statusLine('warn', sanitizeTerminalText(savedUrlWarning))
+    return text
+  }
+
+  function renderBanner() {
+    stdout.write(bannerText())
   }
 
   try {
@@ -253,8 +263,10 @@ async function main() {
   } catch { /* The interactive shell can still start while LM Studio is offline. */ }
   await refreshModelCatalog()
   clearScreen()
-  renderBanner()
-  if (savedUrlWarning) stdout.write(statusLine('warn', sanitizeTerminalText(savedUrlWarning)))
+  // Interactive mode draws the banner as part of the first prompt.ask() call
+  // (via getBanner) so the models-list poller can live-refresh it in place.
+  // One-shot (--prompt) mode never reaches ask(), so print it directly here.
+  if (options.prompt) renderBanner()
 
   async function runTurn(prompt) {
     const userMessage = { role: 'user', content: prompt }
@@ -731,8 +743,10 @@ async function main() {
       await runTurn(options.prompt)
       return
     }
+    let showBanner = true
     while (true) {
-      const raw = await prompt.ask(`${INDENT}${promptLabel()}`)
+      const raw = await prompt.ask(`${INDENT}${promptLabel()}`, { showBanner })
+      showBanner = false
       if (raw === null) break
       const input = raw.trim()
       if (!input) continue
