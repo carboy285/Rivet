@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
-import { createHash, randomUUID } from 'node:crypto'
-import os from 'node:os'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
+import { APPROVAL_MODES, DEFAULT_APPROVAL_MODE } from '../lib/approval-modes.js'
+import { defaultConfigRoot, projectId } from '../lib/config-root.js'
 
 export const DEFAULT_SYSTEM_PROMPT = `You are an autonomous coding agent working inside the user's selected local project.
 
@@ -35,6 +36,7 @@ export const DEFAULT_PREFERENCES = {
   verboseTools: false,
   serverUrl: '',
   allowInsecureHttp: false,
+  approvalMode: DEFAULT_APPROVAL_MODE,
 }
 
 /** Settings plus the CLI-only preferences (verbose tool output, server URL) that ride along in the same file. */
@@ -44,21 +46,12 @@ export function normalizePreferences(value = {}) {
     verboseTools: Boolean(value.verboseTools),
     serverUrl: typeof value.serverUrl === 'string' && value.serverUrl.trim() ? value.serverUrl.trim().slice(0, 2000) : '',
     allowInsecureHttp: Boolean(value.allowInsecureHttp),
+    approvalMode: APPROVAL_MODES.includes(value.approvalMode) ? value.approvalMode : DEFAULT_APPROVAL_MODE,
   }
-}
-
-function defaultConfigRoot() {
-  if (process.platform === 'win32' && process.env.APPDATA) return path.join(process.env.APPDATA, 'Rivet')
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'Rivet')
-  if (process.env.XDG_CONFIG_HOME && path.isAbsolute(process.env.XDG_CONFIG_HOME)) {
-    return path.join(process.env.XDG_CONFIG_HOME, 'rivet')
-  }
-  return path.join(os.homedir(), '.config', 'rivet')
 }
 
 export function settingsPathForProject(projectRoot, configRoot = defaultConfigRoot()) {
-  const projectId = createHash('sha256').update(path.resolve(projectRoot)).digest('hex')
-  return path.join(path.resolve(configRoot), 'projects', projectId + '.json')
+  return path.join(path.resolve(configRoot), 'projects', projectId(projectRoot) + '.json')
 }
 
 export function createSettingsStore(projectRoot, { configRoot = defaultConfigRoot() } = {}) {

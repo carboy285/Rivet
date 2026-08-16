@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { stdin, stdout } from 'node:process'
@@ -14,6 +15,7 @@ import { createPromptSession } from './prompt.js'
 import {
   agentLabel,
   approvalCard,
+  approvalModeLabel,
   approvalQuestion,
   banner,
   clearScreen,
@@ -27,6 +29,7 @@ import {
   INDENT,
   modelsStatusLine,
   promptLabel,
+  relativeTime,
   sanitizeTerminalText,
   section,
   selectFromList,
@@ -38,7 +41,9 @@ import {
 } from './ui.js'
 import { createWorkspaceManager } from '../backend/services/workspace-manager.js'
 import { createSettingsStore, normalizeSettings } from '../backend/services/settings-store.js'
+import { createSessionStore } from '../backend/services/session-store.js'
 import { getAllModelsWithState, getModels, runCodingAgent, summarizeConversation } from '../backend/services/lm-studio.js'
+import { APPROVAL_MODES, APPROVAL_MODE_INFO } from '../backend/lib/approval-modes.js'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const execFileAsync = promisify(execFile)
@@ -116,6 +121,7 @@ async function main() {
   // session in that folder starts back up the way it was left. Explicit CLI
   // flags always win over whatever was saved last time.
   let settingsStore = createSettingsStore(workspace.info().path)
+  let sessionStore = createSessionStore(workspace.info().path)
   const savedPreferences = await settingsStore.get()
   if (!options.explicit.has('model')) options.model = savedPreferences.model
   if (!options.explicit.has('temperature')) options.temperature = savedPreferences.temperature
@@ -141,6 +147,15 @@ async function main() {
   })
   let conversation = []
   let activeController = null
+  // Assigned lazily on the first autosaved turn, so a session that never
+  // sends a prompt doesn't leave an empty file behind.
+  let sessionId = null
+  // Tracks the mode that should be remembered on disk. Distinct from
+  // approvals.mode, which can be transiently 'bypass' because of --yes for
+  // this run, or because the user answered "always" mid-chat — neither of
+  // those should silently overwrite the project's saved default; only an
+  // explicit /mode selection should.
+  let persistedApprovalMode = savedPreferences.approvalMode
 
   async function persistPreferences() {
     try {
@@ -149,6 +164,7 @@ async function main() {
         verboseTools: options.verboseTools,
         serverUrl: options.url,
         allowInsecureHttp: options.allowInsecureHttp,
+        approvalMode: persistedApprovalMode,
       })
     }
     catch { /* best-effort — a read-only project folder should not block exit */ }
@@ -186,9 +202,9 @@ async function main() {
   }
 
   let approvals
-  function resetApprovals() {
+  function resetApprovals(mode = options.yes ? 'bypass' : savedPreferences.approvalMode) {
     const currentRuntime = { execute: (name, input) => workspace.runtime.execute(name, input) }
-    approvals = createApprovedRuntime(currentRuntime, { confirm: confirmTool, autoApprove: options.yes })
+    approvals = createApprovedRuntime(currentRuntime, { confirm: confirmTool, mode })
   }
   resetApprovals()
 
@@ -217,7 +233,7 @@ async function main() {
       model: activeModel(),
       connected,
       version: VERSION,
-      approveAll: approvals.approveAll,
+      mode: approvals.mode,
       allModels,
     }))
   }
@@ -283,6 +299,15 @@ async function main() {
       endStream()
       conversation.push(userMessage)
       if (assistantText.trim()) conversation.push({ role: 'assistant', content: assistantText })
+      if (!sessionId) sessionId = randomUUID()
+      const firstUserMessage = conversation.find((message) => message.role === 'user')
+      sessionStore.save({
+        id: sessionId,
+        projectPath: workspace.info().path,
+        model: activeModel(),
+        title: firstUserMessage ? firstUserMessage.content.slice(0, 60) : 'Untitled',
+        messages: conversation,
+      }).catch(() => { /* best-effort — a read-only project folder should not block the turn */ })
       if (stdout.isTTY) stdout.write(`\n${INDENT}${ui.muted(`${glyph.bullet} done in ${formatDuration(Date.now() - turnStartedAt)}`)}\n\n`)
     } catch (error) {
       spinner.stop()
@@ -315,9 +340,12 @@ async function main() {
           await persistPreferences()
           await workspace.select(nextProject)
           conversation = []
-          resetApprovals()
+          sessionId = null
           settingsStore = createSettingsStore(workspace.info().path)
+          sessionStore = createSessionStore(workspace.info().path)
           const nextPreferences = await settingsStore.get()
+          persistedApprovalMode = nextPreferences.approvalMode
+          resetApprovals(options.yes ? 'bypass' : nextPreferences.approvalMode)
           settings = normalizeSettings({
             systemPrompt: process.env.CODING_AGENT_SYSTEM_PROMPT || nextPreferences.systemPrompt,
             model: nextPreferences.model,
@@ -413,6 +441,33 @@ async function main() {
       },
     },
     {
+      name: '/mode',
+      usage: '/mode [auto|manual|acceptEdits|plan|bypass]',
+      summary: 'Pick a permission mode — arrow keys navigate, enter selects',
+      async handler(argument) {
+        if (argument) {
+          if (!APPROVAL_MODES.includes(argument)) {
+            stdout.write(errorLine(`Unknown mode: ${argument}. Valid: ${APPROVAL_MODES.join(', ')}`))
+            return
+          }
+          approvals.setMode(argument)
+          persistedApprovalMode = argument
+          stdout.write(statusLine('ok', `Mode set to ${ui.bold(approvalModeLabel(argument))}`))
+          return
+        }
+        if (!stdin.isTTY) {
+          stdout.write(usageLine(`/mode <${APPROVAL_MODES.join('|')}>`))
+          return
+        }
+        const items = APPROVAL_MODES.map((id) => ({ id, label: APPROVAL_MODE_INFO[id].label, detail: APPROVAL_MODE_INFO[id].detail }))
+        const picked = await selectFromList({ title: 'permission mode', items, currentId: approvals.mode })
+        if (!picked) { stdout.write(statusLine('info', 'Selection cancelled.')); return }
+        approvals.setMode(picked.id)
+        persistedApprovalMode = picked.id
+        stdout.write(statusLine('ok', `Mode set to ${ui.bold(approvalModeLabel(picked.id))}`))
+      },
+    },
+    {
       name: '/config',
       usage: '/config [key=value ...]',
       summary: 'View or change temperature, maxTokens, systemPrompt, verboseTools',
@@ -456,7 +511,7 @@ async function main() {
           ['temperature', settings.temperature],
           ['max tokens', settings.maxTokens],
           ['server', sanitizeTerminalText(options.url) + (isInsecureRemoteUrl(options.url) ? ' ' + ui.yellow('(insecure HTTP)') : '')],
-          ['approvals', approvals.approveAll ? ui.yellow('automatic for this session') : 'ask before changes'],
+          ['approvals', approvals.mode === 'bypass' || approvals.mode === 'plan' ? ui.yellow(approvalModeLabel(approvals.mode)) : approvalModeLabel(approvals.mode)],
           ['turns', conversation.length],
         )
         stdout.write(section('status', entries))
@@ -492,6 +547,37 @@ async function main() {
         try {
           await fs.writeFile(target, transcript, 'utf8')
           stdout.write(statusLine('ok', `Exported to ${sanitizeTerminalText(target)}`))
+        } catch (error) { stdout.write(errorLine(error.message)) }
+      },
+    },
+    {
+      name: '/resume',
+      usage: '/resume',
+      summary: 'Pick a past session for this project — arrow keys navigate, enter continues it',
+      async handler() {
+        let summaries
+        try { summaries = await sessionStore.list() } catch (error) { stdout.write(errorLine(error.message)); return }
+        if (!summaries.length) { stdout.write(statusLine('info', 'No saved sessions for this project yet.')); return }
+        if (!stdin.isTTY) {
+          stdout.write(usageLine('/resume'))
+          for (const summary of summaries) {
+            stdout.write(`${INDENT}${ui.muted(summary.id)}  ${sanitizeTerminalText(summary.title)}\n`)
+          }
+          return
+        }
+        const items = summaries.map((summary) => ({
+          id: summary.id,
+          label: summary.title || 'Untitled',
+          detail: `${summary.messageCount} message(s) ${glyph.bullet} ${relativeTime(summary.updatedAt)}`,
+        }))
+        const picked = await selectFromList({ title: 'resume session', items })
+        if (!picked) { stdout.write(statusLine('info', 'Selection cancelled.')); return }
+        try {
+          const full = await sessionStore.load(picked.id)
+          conversation = full.messages
+          sessionId = full.id
+          if (full.model) settings = { ...settings, model: full.model }
+          stdout.write(statusLine('ok', `Resumed ${ui.bold(sanitizeTerminalText(full.title || 'session'))}`, `${glyph.bullet} ${full.messages.length} message(s)`))
         } catch (error) { stdout.write(errorLine(error.message)) }
       },
     },
@@ -576,6 +662,7 @@ async function main() {
       summary: 'Clear the screen and start a fresh conversation',
       async handler() {
         conversation = []
+        sessionId = null
         try {
           models = await getModels(options.url, AbortSignal.timeout(2500))
           connected = true

@@ -19,8 +19,8 @@ Options:
   -v, --version             Show the version
 
 Run the agent and type /help to see interactive commands (/project, /server,
-/models, /model, /config, /status, /compact, /export, /diff, /doctor, /usage,
-/add-dir, /clear, /exit, and more).
+/models, /model, /mode, /config, /status, /compact, /export, /resume, /diff,
+/doctor, /usage, /add-dir, /clear, /exit, and more).
 
 In the shell: ctrl+c cancels a response, ctrl+l redraws a clean screen, and
 /clear wipes the screen and starts a fresh conversation.

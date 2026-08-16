@@ -1,4 +1,5 @@
 import { stdin, stdout } from 'node:process'
+import { APPROVAL_MODE_INFO, DEFAULT_APPROVAL_MODE } from '../backend/lib/approval-modes.js'
 
 const colorEnabled = Boolean(stdout.isTTY && !process.env.NO_COLOR)
 const unicodeEnabled = process.platform !== 'win32' || Boolean(process.env.WT_SESSION)
@@ -122,6 +123,19 @@ export function formatDuration(ms) {
   return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`
 }
 
+export function relativeTime(iso) {
+  const then = new Date(iso).getTime()
+  if (!Number.isFinite(then)) return ''
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000))
+  if (seconds < 60) return 'just now'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  return `${days}d ago`
+}
+
 export function toolDescription(name, input = {}) {
   if (name === 'run_command') return clip(input.command)
   if (name === 'list_files') return sanitizeTerminalText(input.path || '.')
@@ -155,7 +169,11 @@ export function toolResultLine(name, result, isError, elapsedMs) {
   return `${INDENT}${ui.muted(glyph.corner)} ${mark} ${isError ? ui.red(detail) : ui.muted(detail)}${timing}\n`
 }
 
-export function banner({ project, url, model, connected, version, approveAll, allModels = [] }) {
+export function approvalModeLabel(mode) {
+  return (APPROVAL_MODE_INFO[mode] || APPROVAL_MODE_INFO[DEFAULT_APPROVAL_MODE]).label
+}
+
+export function banner({ project, url, model, connected, version, mode, allModels = [] }) {
   const leftWidth = 56
   const inner = leftWidth - INDENT.length * 2 - 2
   const title = ` ${glyph.diamond} RIVET`
@@ -171,7 +189,7 @@ export function banner({ project, url, model, connected, version, approveAll, al
     ['project', sanitizeTerminalText(project)],
     ['model', modelValue],
     ['server', sanitizeTerminalText(url)],
-    ['approvals', approveAll ? ui.yellow('auto-approved for this session') : 'ask before changes'],
+    ['approvals', mode === 'bypass' || mode === 'plan' ? ui.yellow(approvalModeLabel(mode)) : approvalModeLabel(mode)],
   ]
   const labelWidth = rowEntries.reduce((max, [label]) => Math.max(max, label.length), 0)
 
@@ -432,6 +450,7 @@ export async function selectFromList({ terminal, title, items, currentId, hint }
         const text = isFocused ? ui.bold(ui.accent(label)) : (isCurrent ? ui.bold(label) : label)
         const note = isCurrent ? ` ${ui.muted('(loaded)')}` : ''
         parts.push(`${INDENT}${marker} ${text}${note}\n`)
+        if (item.detail) parts.push(`${INDENT}  ${ui.muted(clip(item.detail, labelWidth))}\n`)
       }
       parts.push(`\n${INDENT}${ui.muted(hint || `${glyph.arrow} ↑/↓ move  ${glyph.bullet} enter select  ${glyph.bullet} esc cancel`)}\n`)
       return parts.join('')

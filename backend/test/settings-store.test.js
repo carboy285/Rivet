@@ -6,6 +6,7 @@ import path from 'node:path'
 import {
   createSettingsStore,
   DEFAULT_PREFERENCES,
+  normalizePreferences,
   settingsPathForProject,
 } from '../services/settings-store.js'
 
@@ -49,4 +50,11 @@ test('preferences persist in private user-owned storage keyed by project', async
   assert.equal(path.dirname(path.dirname(settingsPath)), configRoot)
   assert.equal((await fs.stat(settingsPath)).mode & 0o777, 0o600)
   assert.equal((await fs.stat(path.dirname(settingsPath))).mode & 0o777, 0o700)
+})
+
+test('approvalMode is validated against the known enum', () => {
+  assert.equal(normalizePreferences({ approvalMode: 'plan' }).approvalMode, 'plan')
+  assert.equal(normalizePreferences({ approvalMode: 'bypass' }).approvalMode, 'bypass')
+  assert.equal(normalizePreferences({ approvalMode: 'not-a-real-mode' }).approvalMode, 'auto')
+  assert.equal(normalizePreferences({}).approvalMode, 'auto')
 })

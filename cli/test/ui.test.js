@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { approvalCard, banner, sanitizeTerminalText, toolDescription, toolResultDescription } from '../ui.js'
+import { approvalCard, approvalModeLabel, banner, relativeTime, sanitizeTerminalText, selectFromList, toolDescription, toolResultDescription } from '../ui.js'
 
 test('approval card displays the complete command and execution context', () => {
   const command = 'printf safe; '.repeat(20) + 'printf MALICIOUS_SUFFIX'
@@ -43,6 +43,32 @@ test('approval card shows a warning instead of a diff when the edit preview fail
 test('tool description and result summaries cover edit_file', () => {
   assert.match(toolDescription('edit_file', { path: 'a.js', edits: [{ search: 'x', replace: 'y' }] }), /a\.js.*1 edit\(s\)/)
   assert.match(toolResultDescription('edit_file', { path: 'a.js', hunkCount: 2 }), /edited a\.js.*2 hunk\(s\)/)
+})
+
+test('approvalModeLabel maps known modes and falls back to the default', () => {
+  assert.equal(approvalModeLabel('plan'), 'Plan')
+  assert.equal(approvalModeLabel('bypass'), 'Bypass permissions')
+  assert.equal(approvalModeLabel('not-a-real-mode'), 'Auto')
+  assert.equal(approvalModeLabel(undefined), 'Auto')
+})
+
+test('relativeTime renders coarse buckets and handles invalid input', () => {
+  const now = new Date()
+  assert.equal(relativeTime(now.toISOString()), 'just now')
+  assert.equal(relativeTime(new Date(now - 5 * 60 * 1000).toISOString()), '5m ago')
+  assert.equal(relativeTime(new Date(now - 3 * 60 * 60 * 1000).toISOString()), '3h ago')
+  assert.equal(relativeTime(new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString()), '2d ago')
+  assert.equal(relativeTime('not-a-date'), '')
+})
+
+test('banner renders without a mode falling back cleanly (no crash on unknown mode)', () => {
+  const rendered = banner({ project: '/tmp/x', url: 'http://localhost:1234/v1', model: 'demo', connected: true, version: '1.0.1', mode: 'plan', allModels: [] })
+  assert.match(rendered, /Plan/)
+})
+
+test('selectFromList resolves null outside a TTY regardless of item shape', async () => {
+  const picked = await selectFromList({ title: 't', items: [{ id: 'a', label: 'A', detail: 'detail text' }] })
+  assert.equal(picked, null)
 })
 
 test('approval card shows the timeout the runtime will actually enforce', () => {
