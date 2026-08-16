@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { HELP, parseArgs, normalizeBaseUrl } from '../args.js'
+import { HELP, VERSION, parseArgs, normalizeBaseUrl } from '../args.js'
 
 test('CLI help uses the Rivet brand and command', () => {
-  assert.match(HELP, /^Rivet 1\.0\.0/m)
+  assert.match(HELP, new RegExp(`^Rivet ${VERSION.replace(/\./g, '\\.')}`, 'm'))
   assert.match(HELP, /^  rivet \[project\] \[options\]$/m)
 })
 
