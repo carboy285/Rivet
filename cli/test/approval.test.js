@@ -14,6 +14,16 @@ test('read-only tools run without approval and writes require it', async () => {
   assert.deepEqual(approvals, ['write_file', 'run_command'])
 })
 
+test('edit_file requires approval like other mutating tools', async () => {
+  const calls = []
+  const runtime = { execute: async (name) => { calls.push(name); return { ok: true } } }
+  const guarded = createApprovedRuntime(runtime, { confirm: async () => 'once' })
+  await guarded.execute('edit_file', { path: 'a', edits: [{ search: 'x', replace: 'y' }] })
+  assert.deepEqual(calls, ['edit_file'])
+  const denying = createApprovedRuntime(runtime, { confirm: async () => false })
+  await assert.rejects(denying.execute('edit_file', { path: 'a', edits: [] }), /denied/)
+})
+
 test('approve all persists for the terminal session', async () => {
   let prompts = 0
   const runtime = { execute: async (name) => name }

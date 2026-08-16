@@ -7,7 +7,7 @@ export const DEFAULT_SYSTEM_PROMPT = `You are an autonomous coding agent working
 
 When given a task:
 1. Inspect relevant files with list_files and read_file before editing
-2. Implement requested changes with write_file or append_file
+2. Implement requested changes with edit_file for existing files (precise search/replace) or write_file for new files
 3. Run focused commands to test or debug the result
 4. Keep all work inside the selected project
 5. Briefly summarize what you changed and verified

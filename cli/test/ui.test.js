@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { approvalCard, banner, sanitizeTerminalText } from '../ui.js'
+import { approvalCard, banner, sanitizeTerminalText, toolDescription, toolResultDescription } from '../ui.js'
 
 test('approval card displays the complete command and execution context', () => {
   const command = 'printf safe; '.repeat(20) + 'printf MALICIOUS_SUFFIX'
@@ -21,6 +21,28 @@ test('approval card displays exact write content without executing terminal cont
   assert.match(card, /content  "safe\\n\\u001b\]52;c;Zm9v\\u0007\\u202ebackwards"/)
   assert.match(card, /\\u202e/)
   assert.equal(card.includes('\u001b]52'), false)
+})
+
+test('approval card renders a real diff for edit_file when a preview is supplied', () => {
+  const input = { path: 'src/file.js', edits: [{ search: 'const a = 1', replace: 'const a = 2' }] }
+  const preview = { path: 'src/file.js', hunks: [{ index: 1, startLine: 3, removedLines: ['const a = 1'], addedLines: ['const a = 2'] }] }
+  const card = approvalCard('edit_file', input, preview)
+
+  assert.match(card, /src\/file\.js/)
+  assert.match(card, /@@ src\/file\.js:3 @@/)
+  assert.match(card, /- const a = 1/)
+  assert.match(card, /\+ const a = 2/)
+})
+
+test('approval card shows a warning instead of a diff when the edit preview fails', () => {
+  const card = approvalCard('edit_file', { path: 'src/file.js', edits: [{ search: 'missing', replace: 'x' }] }, { error: 'search text was not found in src/file.js.' })
+  assert.match(card, /this edit will fail/)
+  assert.match(card, /search text was not found/)
+})
+
+test('tool description and result summaries cover edit_file', () => {
+  assert.match(toolDescription('edit_file', { path: 'a.js', edits: [{ search: 'x', replace: 'y' }] }), /a\.js.*1 edit\(s\)/)
+  assert.match(toolResultDescription('edit_file', { path: 'a.js', hunkCount: 2 }), /edited a\.js.*2 hunk\(s\)/)
 })
 
 test('approval card shows the timeout the runtime will actually enforce', () => {

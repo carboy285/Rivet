@@ -166,7 +166,16 @@ async function main() {
 
   async function confirmTool(name, input) {
     if (!stdin.isTTY) return false
-    stdout.write(approvalCard(name, input))
+    let preview = null
+    if (name === 'edit_file') {
+      try {
+        preview = await workspace.runtime.previewEdit(input.path, input.edits)
+      }
+      catch (error) {
+        preview = { error: error.message }
+      }
+    }
+    stdout.write(approvalCard(name, input, preview))
     const raw = await prompt.question(approvalQuestion())
     stdout.write('\n')
     if (raw === null) return false

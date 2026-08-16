@@ -29,6 +29,32 @@ export const toolDefinitions = [
   {
     type: 'function',
     function: {
+      name: 'edit_file',
+      description: 'Make one or more precise text replacements in an existing UTF-8 file. Each edit\'s "search" text must match the current file contents exactly and uniquely; use this instead of write_file when changing part of an existing file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File path relative to the project root.' },
+          edits: {
+            type: 'array',
+            description: 'Ordered list of replacements to apply.',
+            items: {
+              type: 'object',
+              properties: {
+                search: { type: 'string', description: 'Exact text to find; must appear exactly once in the file.' },
+                replace: { type: 'string', description: 'Text to replace it with.' },
+              },
+              required: ['search', 'replace'],
+            },
+          },
+        },
+        required: ['path', 'edits'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'append_file',
       description: 'Append UTF-8 content to a file in the project, creating it if needed.',
       parameters: {

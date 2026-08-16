@@ -1,4 +1,4 @@
-const mutatingTools = new Set(['write_file', 'append_file', 'delete_file', 'run_command'])
+const mutatingTools = new Set(['write_file', 'append_file', 'edit_file', 'delete_file', 'run_command'])
 
 export function createApprovedRuntime(runtime, { confirm, autoApprove = false }) {
   let approveAll = autoApprove

@@ -27,6 +27,39 @@ test('file tools read, write, append, list, and delete within the project', asyn
   await assert.rejects(runtime.execute('read_file', { path: 'src/hello.js' }), /ENOENT/)
 })
 
+test('edit_file applies search/replace hunks and previewEdit performs no write', async (context) => {
+  const { directory, cleanup } = await fixture()
+  context.after(cleanup)
+  const runtime = await createToolRuntime(directory)
+  await runtime.execute('write_file', { path: 'src/hello.js', content: 'const a = 1\nconst b = 2\n' })
+
+  const preview = await runtime.previewEdit('src/hello.js', [{ search: 'const a = 1', replace: 'const a = 100' }])
+  assert.equal(preview.path, 'src/hello.js')
+  assert.equal(preview.hunks.length, 1)
+  const unchanged = await runtime.readFile('src/hello.js')
+  assert.match(unchanged.content, /const a = 1\n/)
+
+  const result = await runtime.execute('edit_file', { path: 'src/hello.js', edits: [{ search: 'const a = 1', replace: 'const a = 100' }] })
+  assert.equal(result.action, 'edited')
+  assert.equal(result.hunkCount, 1)
+  const edited = await runtime.readFile('src/hello.js')
+  assert.equal(edited.content, 'const a = 100\nconst b = 2\n')
+})
+
+test('edit_file rejects stale or ambiguous edits without touching the file', async (context) => {
+  const { directory, cleanup } = await fixture()
+  context.after(cleanup)
+  const runtime = await createToolRuntime(directory)
+  await runtime.execute('write_file', { path: 'note.txt', content: 'original content\n' })
+
+  await assert.rejects(
+    runtime.execute('edit_file', { path: 'note.txt', edits: [{ search: 'no such text', replace: 'x' }] }),
+    /search text was not found/,
+  )
+  const stillOriginal = await runtime.readFile('note.txt')
+  assert.equal(stillOriginal.content, 'original content\n')
+})
+
 test('path traversal and symlink escapes are rejected', async (context) => {
   const { directory, cleanup } = await fixture()
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'coding-agent-outside-'))

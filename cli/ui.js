@@ -126,6 +126,7 @@ export function toolDescription(name, input = {}) {
   if (name === 'run_command') return clip(input.command)
   if (name === 'list_files') return sanitizeTerminalText(input.path || '.')
   if (name === 'write_file' || name === 'append_file') return `${sanitizeTerminalText(input.path || '?')} ${glyph.bullet} ${formatBytes(Buffer.byteLength(input.content || ''))}`
+  if (name === 'edit_file') return `${sanitizeTerminalText(input.path || '?')} ${glyph.bullet} ${(input.edits || []).length} edit(s)`
   return sanitizeTerminalText(input.path || '')
 }
 
@@ -136,6 +137,7 @@ export function toolResultDescription(name, result = {}, isError = false) {
   if (name === 'run_command') return `exit ${result.exitCode}`
   if (name === 'delete_file') return `deleted ${sanitizeTerminalText(result.path)}`
   if (name === 'write_file' || name === 'append_file') return `${sanitizeTerminalText(result.action)} ${sanitizeTerminalText(result.path)}`
+  if (name === 'edit_file') return `edited ${sanitizeTerminalText(result.path)} ${glyph.bullet} ${result.hunkCount || 0} hunk(s)`
   return 'complete'
 }
 
@@ -344,12 +346,24 @@ export function createSpinner(label) {
   }
 }
 
+/** Renders search/replace hunks (from runtime.previewEdit) as a compact `+`/`-` diff. */
+export function formatEditPreview(path, hunks = []) {
+  const blocks = hunks.map((hunk) => {
+    const header = `${INDENT}${ui.yellow(glyph.v)}  ${ui.muted(`@@ ${sanitizeTerminalText(path)}:${hunk.startLine} @@`)}\n`
+    const removed = hunk.removedLines.map((line) => `${INDENT}${ui.yellow(glyph.v)}  ${ui.red(`- ${sanitizeTerminalText(line)}`)}\n`).join('')
+    const added = hunk.addedLines.map((line) => `${INDENT}${ui.yellow(glyph.v)}  ${ui.green(`+ ${sanitizeTerminalText(line)}`)}\n`).join('')
+    return header + removed + added
+  })
+  return blocks.join(`${INDENT}${ui.yellow(glyph.v)}\n`)
+}
+
 /** Multi-line approval card; the caller appends its own readline question. */
-export function approvalCard(name, input = {}) {
+export function approvalCard(name, input = {}, preview = null) {
   const lines = []
   // JSON quoting preserves whitespace and makes every control byte visible;
   // sanitizing afterwards also neutralizes C1 and bidi controls JSON permits.
   const quote = (value) => sanitizeTerminalText(JSON.stringify(String(value ?? '')))
+  let diffBlock = ''
   if (name === 'run_command') {
     lines.push(['command', quote(input.command || '')])
     lines.push(['cwd', quote(input.cwd || '.')])
@@ -361,6 +375,14 @@ export function approvalCard(name, input = {}) {
     lines.push(['path', quote(input.path || '')])
     lines.push(['bytes', String(Buffer.byteLength(content))])
     lines.push(['content', quote(content)])
+  } else if (name === 'edit_file') {
+    lines.push(['path', quote(input.path || '')])
+    lines.push(['edits', String((input.edits || []).length)])
+    if (preview?.error) {
+      lines.push(['warning', ui.yellow(`this edit will fail: ${sanitizeTerminalText(preview.error)}`)])
+    } else if (preview?.hunks?.length) {
+      diffBlock = `${INDENT}${ui.yellow(glyph.v)}\n${formatEditPreview(preview.path || input.path || '', preview.hunks)}\n`
+    }
   } else if (name === 'delete_file') {
     lines.push(['path', quote(input.path || '')])
   } else {
@@ -372,6 +394,7 @@ export function approvalCard(name, input = {}) {
   for (const [label, value] of lines) {
     card += `${INDENT}${ui.yellow(glyph.v)}  ${ui.muted(label)}  ${value}\n`
   }
+  card += diffBlock
   return card
 }
 

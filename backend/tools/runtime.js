@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { createProjectPath, relativeProjectPath } from '../lib/project-path.js'
+import { applyEdits } from '../lib/diff.js'
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024
@@ -54,6 +55,12 @@ export async function createToolRuntime(projectRoot, extraRoots = []) {
   const root = path.resolve(projectRoot)
   const resolvePath = await createProjectPath(root, extraRoots)
 
+  async function atomicWrite(target, content) {
+    const temporary = `${target}.coding-agent-${process.pid}-${Date.now()}`
+    await fs.writeFile(temporary, content, 'utf8')
+    await fs.rename(temporary, target)
+  }
+
   async function readFile(relativePath) {
     const target = await resolvePath(relativePath, { mustExist: true })
     const stats = await fs.stat(target)
@@ -74,11 +81,34 @@ export async function createToolRuntime(projectRoot, extraRoots = []) {
     if (append) {
       await fs.appendFile(target, content, 'utf8')
     } else {
-      const temporary = `${target}.coding-agent-${process.pid}-${Date.now()}`
-      await fs.writeFile(temporary, content, 'utf8')
-      await fs.rename(temporary, target)
+      await atomicWrite(target, content)
     }
     return { path: relativeProjectPath(root, target), bytesWritten: Buffer.byteLength(content), action: append ? 'appended' : 'written' }
+  }
+
+  async function readEditableFile(relativePath) {
+    const target = await resolvePath(relativePath, { mustExist: true })
+    const stats = await fs.stat(target)
+    if (!stats.isFile()) throw new Error('Path is not a file.')
+    if (stats.size > MAX_FILE_BYTES) throw new Error('File is larger than the 2 MB reading limit.')
+    const content = await fs.readFile(target, 'utf8')
+    if (content.includes('\0')) throw new Error('Binary files cannot be edited.')
+    return { target, content }
+  }
+
+  async function previewEdit(relativePath, edits) {
+    const { target, content } = await readEditableFile(relativePath)
+    const label = relativeProjectPath(root, target)
+    const { hunks } = applyEdits(content, edits, label)
+    return { path: label, hunks }
+  }
+
+  async function editFile(relativePath, edits) {
+    const { target, content } = await readEditableFile(relativePath)
+    const label = relativeProjectPath(root, target)
+    const { result, hunks } = applyEdits(content, edits, label)
+    await atomicWrite(target, result)
+    return { path: label, action: 'edited', bytesWritten: Buffer.byteLength(result), hunkCount: hunks.length }
   }
 
   async function listDirectory(relativePath = '.', recursive = false) {
@@ -142,6 +172,7 @@ export async function createToolRuntime(projectRoot, extraRoots = []) {
       case 'read_file': return readFile(input.path)
       case 'write_file': return writeFile(input.path, input.content, false)
       case 'append_file': return writeFile(input.path, input.content, true)
+      case 'edit_file': return editFile(input.path, input.edits)
       case 'list_files': return listDirectory(input.path || '.', Boolean(input.recursive))
       case 'delete_file': return deleteFile(input.path)
       case 'run_command': return runCommand(input)
@@ -149,5 +180,5 @@ export async function createToolRuntime(projectRoot, extraRoots = []) {
     }
   }
 
-  return { root, resolvePath, readFile, writeFile, listDirectory, deleteFile, runCommand, execute }
+  return { root, resolvePath, readFile, writeFile, editFile, previewEdit, listDirectory, deleteFile, runCommand, execute }
 }
